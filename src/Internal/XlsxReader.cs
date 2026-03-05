@@ -96,9 +96,9 @@ internal static partial class XlsxReader
             var name = sheetId.Name;
             var rId = sheetId.RId;
             if (!rels.TryGetValue(rId, out var path)) continue;
-            var (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, dataValidations, conditionalFormats) = ReadWorksheet(archive, path);
+            var (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, printOptions, headerFooter, hyperlinks, dataValidations, conditionalFormats) = ReadWorksheet(archive, path);
             var comments = ReadSheetComments(archive, path);
-            list.Add(new SheetData(name, rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, comments, dataValidations, conditionalFormats, sheetId.Visibility));
+            list.Add(new SheetData(name, rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, printOptions, headerFooter, hyperlinks, comments, dataValidations, conditionalFormats, sheetId.Visibility));
         }
         return (list, definedNames);
     }
@@ -224,10 +224,10 @@ internal static partial class XlsxReader
         return firstRow <= lastRow && firstCol <= lastCol;
     }
 
-    private static (List<RowData> Rows, List<ColInfo> ColInfos, List<MergeRange> MergeRanges, FreezePaneInfo? FreezePane, List<int> RowBreaks, List<int> ColBreaks, PageSetupInfo? PageSetup, PageMarginsInfo? PageMargins, List<HyperlinkInfo> Hyperlinks, List<DataValidationInfo> DataValidations, List<ConditionalFormatInfo> ConditionalFormats) ReadWorksheet(ZipArchive archive, string path)
+    private static (List<RowData> Rows, List<ColInfo> ColInfos, List<MergeRange> MergeRanges, FreezePaneInfo? FreezePane, List<int> RowBreaks, List<int> ColBreaks, PageSetupInfo? PageSetup, PageMarginsInfo? PageMargins, PrintOptionsInfo? PrintOptions, HeaderFooterInfo? HeaderFooter, List<HyperlinkInfo> Hyperlinks, List<DataValidationInfo> DataValidations, List<ConditionalFormatInfo> ConditionalFormats) ReadWorksheet(ZipArchive archive, string path)
     {
         var entry = archive.GetEntry(path) ?? archive.GetEntry("xl/" + path);
-        if (entry == null) return (new List<RowData>(), new List<ColInfo>(), new List<MergeRange>(), null, new List<int>(), new List<int>(), null, null, new List<HyperlinkInfo>(), new List<DataValidationInfo>(), new List<ConditionalFormatInfo>());
+        if (entry == null) return (new List<RowData>(), new List<ColInfo>(), new List<MergeRange>(), null, new List<int>(), new List<int>(), null, null, null, null, new List<HyperlinkInfo>(), new List<DataValidationInfo>(), new List<ConditionalFormatInfo>());
 
         var rows = new List<RowData>();
         var colInfos = new List<ColInfo>();
@@ -241,6 +241,8 @@ internal static partial class XlsxReader
         FreezePaneInfo? freezePane = null;
         PageSetupInfo? pageSetup = null;
         PageMarginsInfo? pageMargins = null;
+        PrintOptionsInfo? printOptions = null;
+        HeaderFooterInfo? headerFooter = null;
         var inRowBreaks = false;
         var inColBreaks = false;
 
@@ -297,6 +299,22 @@ internal static partial class XlsxReader
                 var startPage = ParseInt(reader.GetAttribute("useFirstPageNumber")) == 1 ? ParseInt(reader.GetAttribute("firstPageNumber")) : 1;
                 pageSetup = new PageSetupInfo(orientation == "landscape", scale > 0 ? scale : 100, fitToWidth >= 0 ? fitToWidth : 0, fitToHeight >= 0 ? fitToHeight : 0, startPage > 0 ? startPage : 1);
             }
+            else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "printOptions" && reader.NamespaceURI == ns)
+            {
+                var gridLines = reader.GetAttribute("gridLines");
+                var headings = reader.GetAttribute("headings");
+                var horizCentered = reader.GetAttribute("horizontalCentered");
+                var vertCentered = reader.GetAttribute("verticalCentered");
+                var blackAndWhite = reader.GetAttribute("blackAndWhite");
+                var draft = reader.GetAttribute("draft");
+                printOptions = new PrintOptionsInfo(
+                    PrintGridLines: gridLines == "1",
+                    PrintHeadings: headings == "1",
+                    CenterHorizontally: horizCentered == "1",
+                    CenterVertically: vertCentered == "1",
+                    BlackAndWhite: blackAndWhite == "1",
+                    Draft: draft == "1");
+            }
             else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "col" && reader.NamespaceURI == ns)
             {
                 var min = ParseInt(reader.GetAttribute("min")) - 1;
@@ -336,6 +354,26 @@ internal static partial class XlsxReader
                     if (range.HasValue)
                         hyperlinks.Add(new HyperlinkInfo(range.Value.FirstRow, range.Value.FirstCol, range.Value.LastRow, range.Value.LastCol, url));
                 }
+            }
+            else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "headerFooter" && reader.NamespaceURI == ns)
+            {
+                string? header = null;
+                string? footer = null;
+                if (!reader.IsEmptyElement)
+                {
+                    while (reader.Read())
+                    {
+                        if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "headerFooter" && reader.NamespaceURI == ns)
+                            break;
+                        if (reader.NodeType != XmlNodeType.Element || reader.NamespaceURI != ns) continue;
+                        if (reader.LocalName == "oddHeader" && reader.Read() && reader.NodeType == XmlNodeType.Text)
+                            header = reader.Value;
+                        else if (reader.LocalName == "oddFooter" && reader.Read() && reader.NodeType == XmlNodeType.Text)
+                            footer = reader.Value;
+                    }
+                }
+                if (!string.IsNullOrEmpty(header) || !string.IsNullOrEmpty(footer))
+                    headerFooter = new HeaderFooterInfo(header ?? string.Empty, footer ?? string.Empty);
             }
             // <mergeCells>/<mergeCell>: merged ranges
             else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "mergeCells" && reader.NamespaceURI == ns)
@@ -382,7 +420,7 @@ internal static partial class XlsxReader
             currentRow = currentRow.Value with { Cells = cells.ToArray() };
             rows.Add(currentRow.Value);
         }
-        return (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, dataValidations, conditionalFormats);
+        return (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, printOptions, headerFooter, hyperlinks, dataValidations, conditionalFormats);
     }
 
     private static DataValidationInfo? ReadDataValidation(XmlReader reader, string ns)
@@ -868,6 +906,8 @@ internal record struct SheetData(
     List<int> ColBreaks,
     PageSetupInfo? PageSetup,
     PageMarginsInfo? PageMargins,
+    PrintOptionsInfo? PrintOptions,
+    HeaderFooterInfo? HeaderFooter,
     List<HyperlinkInfo> Hyperlinks,
     List<CommentInfo> Comments,
     List<DataValidationInfo> DataValidations,
@@ -902,6 +942,8 @@ internal record struct HyperlinkInfo(int FirstRow, int FirstCol, int LastRow, in
 internal record struct FreezePaneInfo(int ColSplit, int RowSplit, int TopRowVisible, int LeftColVisible);
 internal record struct PageSetupInfo(bool Landscape, int Scale, int FitToWidth, int FitToHeight, int StartPageNumber);
 internal record struct PageMarginsInfo(double Left, double Right, double Top, double Bottom, double Header, double Footer);
+internal record struct PrintOptionsInfo(bool PrintGridLines, bool PrintHeadings, bool CenterHorizontally, bool CenterVertically, bool BlackAndWhite, bool Draft);
+internal record struct HeaderFooterInfo(string Header, string Footer);
 internal record struct ColInfo(int FirstCol, int LastCol, double Width, bool Hidden);
 internal record struct MergeRange(int FirstRow, int FirstCol, int LastRow, int LastCol);
 internal record struct RowData(int RowIndex, CellData[] Cells, double Height, bool Hidden);

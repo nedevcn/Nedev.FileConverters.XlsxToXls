@@ -49,7 +49,17 @@ public static class XlsxToXlsConverter
     {
         var s = new StylesData();
         s.EnsureMinFonts();
-        s.CellXfs.Add(new CellXfInfo(0, 0, 0, 0));
+        s.CellXfs.Add(new CellXfInfo(
+            NumFmtId: 0,
+            FontId: 0,
+            FillId: 0,
+            BorderId: 0,
+            HorizontalAlign: 0,
+            VerticalAlign: 2, // 默认底部对齐
+            WrapText: false,
+            Indent: 0,
+            Locked: true,
+            Hidden: false));
         return s;
     }
 
@@ -106,12 +116,12 @@ public static class XlsxToXlsConverter
         pos = bw.Position;
 
         for (var i = 0; i < 15; i++)
-            bw.WriteXf(0, 0, false);
+            bw.WriteXf(0, 0, false, null);
         foreach (var xf in styles.CellXfs)
         {
             var fontIdx = styles.GetBiffFontIndex(xf.FontId);
             var fmtIdx = styles.GetBiffFormatIndex(xf.NumFmtId);
-            bw.WriteXf(fontIdx, fmtIdx, true);
+            bw.WriteXf(fontIdx, fmtIdx, true, xf);
         }
         pos = bw.Position;
 
@@ -389,6 +399,24 @@ public static class XlsxToXlsConverter
         if (sheet.PageSetup is { } setup)
         {
             bw.WritePageSetup(setup.Landscape, setup.Scale, setup.StartPageNumber, setup.FitToWidth, setup.FitToHeight, sheet.PageMargins?.Header ?? 0.3, sheet.PageMargins?.Footer ?? 0.3);
+        }
+        if (sheet.PrintOptions is { } po)
+        {
+            if (po.PrintGridLines)
+                bw.WritePrintGridLines(true);
+            if (po.PrintHeadings)
+                bw.WritePrintHeaders(true);
+            if (po.CenterHorizontally)
+                bw.WriteCenterHorizontal(true);
+            if (po.CenterVertically)
+                bw.WriteCenterVertical(true);
+        }
+        if (sheet.HeaderFooter is { } hf)
+        {
+            if (!string.IsNullOrEmpty(hf.Header))
+                bw.WriteHeader(hf.Header.AsSpan());
+            if (!string.IsNullOrEmpty(hf.Footer))
+                bw.WriteFooter(hf.Footer.AsSpan());
         }
         if (sheet.FreezePane is { } fp)
         {

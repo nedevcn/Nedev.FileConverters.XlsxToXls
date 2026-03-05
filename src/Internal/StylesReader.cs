@@ -107,13 +107,98 @@ internal static class StylesReader
         var borderId = ParseInt(reader.GetAttribute("borderId"));
         if (numFmtId < 0) numFmtId = 0;
         if (fontId < 0) fontId = 0;
-        styles.CellXfs.Add(new CellXfInfo(numFmtId, fontId, fillId, borderId));
+
+        byte horizontalAlign = 0;
+        byte verticalAlign = 0;
+        bool wrapText = false;
+        byte indent = 0;
+        bool locked = true;   // Excel 默认锁定
+        bool hidden = false;
+
+        if (!reader.IsEmptyElement)
+        {
+            var depth = reader.Depth;
+            while (reader.Read())
+            {
+                if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "cellXf" && reader.NamespaceURI == ns && reader.Depth == depth)
+                    break;
+                if (reader.NodeType != XmlNodeType.Element || reader.NamespaceURI != ns) continue;
+
+                if (reader.LocalName == "alignment")
+                {
+                    var h = reader.GetAttribute("horizontal");
+                    var v = reader.GetAttribute("vertical");
+                    var wrap = reader.GetAttribute("wrapText");
+                    var ind = reader.GetAttribute("indent");
+
+                    horizontalAlign = MapHorizontalAlignment(h);
+                    verticalAlign = MapVerticalAlignment(v);
+                    wrapText = ParseBool(wrap, defaultValue: false);
+                    if (int.TryParse(ind, out var indVal) && indVal > 0)
+                        indent = (byte)Math.Clamp(indVal, 0, 15);
+                }
+                else if (reader.LocalName == "protection")
+                {
+                    var lockedAttr = reader.GetAttribute("locked");
+                    var hiddenAttr = reader.GetAttribute("hidden");
+                    // locked 缺省通常为 true
+                    locked = ParseBool(lockedAttr, defaultValue: true);
+                    hidden = ParseBool(hiddenAttr, defaultValue: false);
+                }
+            }
+        }
+
+        styles.CellXfs.Add(new CellXfInfo(
+            numFmtId,
+            fontId,
+            fillId,
+            borderId,
+            horizontalAlign,
+            verticalAlign,
+            wrapText,
+            indent,
+            locked,
+            hidden));
     }
 
     private static int ParseInt(string? s)
     {
         if (string.IsNullOrEmpty(s) || !int.TryParse(s, out var v)) return -1;
         return v;
+    }
+
+    private static bool ParseBool(string? s, bool defaultValue)
+    {
+        if (string.IsNullOrEmpty(s)) return defaultValue;
+        return s == "1" || s.Equals("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static byte MapHorizontalAlignment(string? value)
+    {
+        return value switch
+        {
+            "left" => 1,
+            "center" => 2,
+            "right" => 3,
+            "fill" => 4,
+            "justify" => 5,
+            "centerContinuous" => 6,
+            "distributed" => 7,
+            _ => 0 // general
+        };
+    }
+
+    private static byte MapVerticalAlignment(string? value)
+    {
+        return value switch
+        {
+            "top" => 0,
+            "center" => 1,
+            "bottom" => 2,
+            "justify" => 3,
+            "distributed" => 4,
+            _ => 2 // default bottom
+        };
     }
 
     private static int ParseColorRgb(string rgb)

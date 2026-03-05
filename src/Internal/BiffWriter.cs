@@ -182,19 +182,48 @@ internal ref struct BiffWriter
         _position += 2;
     }
 
-    public void WriteXf(int fontIdx, int formatIdx, bool isCellXf = true)
+    public void WriteXf(int fontIdx, int formatIdx, bool isCellXf = true, CellXfInfo? xfInfo = null)
     {
         WriteRecordHeader(0x00E0, 20);
         BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)fontIdx);
         _position += 2;
         BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)formatIdx);
         _position += 2;
-        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(isCellXf ? 0xFFF0 : 0xFFF0));
+        // Type / protection / parent XF index.
+        // 保持原有高位行为（0xFFF0），只在低两位编码 Locked/Hidden。
+        ushort xfTypeProt = 0xFFF0;
+        if (xfInfo.HasValue && isCellXf)
+        {
+            if (xfInfo.Value.Locked)
+                xfTypeProt |= 0x0001;
+            if (xfInfo.Value.Hidden)
+                xfTypeProt |= 0x0002;
+        }
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), xfTypeProt);
         _position += 2;
+
+        // Alignment: bits 0-2 horizontal, bit 3 wrap, bits 4-6 vertical.
+        byte align = 0;
+        if (xfInfo.HasValue)
+        {
+            align |= (byte)(xfInfo.Value.HorizontalAlign & 0x07);
+            if (xfInfo.Value.WrapText)
+                align |= 0x08;
+            align |= (byte)((xfInfo.Value.VerticalAlign & 0x07) << 4);
+        }
+        _buffer[_position++] = align;
+
+        // Text attributes: low 4 bits indent level (0-15). 其余保持 0。
+        byte textAttrs = 0;
+        if (xfInfo.HasValue)
+            textAttrs |= (byte)(xfInfo.Value.Indent & 0x0F);
+        _buffer[_position++] = textAttrs;
+
+        // Rotation / other flags 暂时保持 0。
         _buffer[_position++] = 0;
         _buffer[_position++] = 0;
-        _buffer[_position++] = 0;
-        _buffer[_position++] = 0;
+
+        // Border / background / pattern 等暂时维持为 0。
         _position += 12;
     }
 
@@ -356,6 +385,34 @@ internal ref struct BiffWriter
         _position += 8;
     }
 
+    public void WritePrintGridLines(bool enabled)
+    {
+        WriteRecordHeader(0x002B, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(enabled ? 1 : 0));
+        _position += 2;
+    }
+
+    public void WritePrintHeaders(bool enabled)
+    {
+        WriteRecordHeader(0x002A, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(enabled ? 1 : 0));
+        _position += 2;
+    }
+
+    public void WriteCenterHorizontal(bool enabled)
+    {
+        WriteRecordHeader(0x0083, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(enabled ? 1 : 0));
+        _position += 2;
+    }
+
+    public void WriteCenterVertical(bool enabled)
+    {
+        WriteRecordHeader(0x0084, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(enabled ? 1 : 0));
+        _position += 2;
+    }
+
     public void WritePageSetup(bool landscape, int scale, int startPage, int fitToWidth, int fitToHeight, double headerMargin, double footerMargin)
     {
         const int recLen = 34;
@@ -399,6 +456,52 @@ internal ref struct BiffWriter
         BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
         _position += 2;
         _position += 12;
+    }
+
+    public void WriteHeader(ReadOnlySpan<char> text)
+    {
+        if (text.Length == 0) return;
+        var need16 = HasHighChar(text);
+        var byteCount = need16 ? text.Length * 2 : text.Length;
+        WriteRecordHeader(0x0014, 3 + byteCount);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)text.Length);
+        _position += 2;
+        _buffer[_position++] = (byte)(need16 ? 1 : 0);
+        if (need16)
+        {
+            for (var i = 0; i < text.Length; i++)
+                BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + i * 2), text[i]);
+            _position += byteCount;
+        }
+        else
+        {
+            for (var i = 0; i < text.Length; i++)
+                _buffer[_position + i] = (byte)text[i];
+            _position += byteCount;
+        }
+    }
+
+    public void WriteFooter(ReadOnlySpan<char> text)
+    {
+        if (text.Length == 0) return;
+        var need16 = HasHighChar(text);
+        var byteCount = need16 ? text.Length * 2 : text.Length;
+        WriteRecordHeader(0x0015, 3 + byteCount);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)text.Length);
+        _position += 2;
+        _buffer[_position++] = (byte)(need16 ? 1 : 0);
+        if (need16)
+        {
+            for (var i = 0; i < text.Length; i++)
+                BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + i * 2), text[i]);
+            _position += byteCount;
+        }
+        else
+        {
+            for (var i = 0; i < text.Length; i++)
+                _buffer[_position + i] = (byte)text[i];
+            _position += byteCount;
+        }
     }
 
     public void WritePane(ushort px, ushort py, ushort topRowVisible, ushort leftColVisible, byte activePane)

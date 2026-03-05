@@ -97,7 +97,7 @@ XlsxToXlsConverter.ConvertFile("input.xlsx", "output.xls");
 |---------|-------------|-------------|
 | Cell/range hyperlinks (URLs) | `<hyperlink ref="..." r:id="...">` + sheet rels | HYPERLINK (URL moniker) |
 | Cell comments (notes) | `commentsN.xml` (authors + commentList) | NOTE + OBJ + TXO/CONTINUE (cell, author, text) |
-| Data validation | `dataValidations` / `dataValidation` (sqref, type, formula1/2) | DATAVALIDATIONS + DATAVALIDATION; **list** type with explicit comma-separated list supported (formula as tStr); other types written with flags/ranges/prompt/error strings, formula RPN not implemented |
+| Data validation | `dataValidations` / `dataValidation` (sqref, type, formula1/2) | DATAVALIDATIONS + DATAVALIDATION; **list** type with explicit comma-separated list supported (formula as tStr); other types written with flags/ranges/prompt/error strings, simple formulas compiled to RPN when possible |
 
 ### Shared string table (SST)
 
@@ -108,7 +108,7 @@ XlsxToXlsConverter.ConvertFile("input.xlsx", "output.xls");
 ## Not supported (current limitations)
 
 - **Formulas (advanced)** — only a subset of Excel formulas is compiled (no full Excel function set; shared formula edge cases may be imperfect).
-- **Data validation (advanced)** — explicit list and simple formulas/ranges are supported; complex formulas/functions and edge cases may not compile.
+- **Data validation (advanced)** — explicit lists and simple formulas/ranges are supported; complex formulas/functions and edge cases may not compile even though basic RPN emission is attempted.
 - **Conditional formatting** — not implemented.
 - **Charts, images, drawings** — not implemented.
 - **Threaded comments** — only legacy comments (commentsN.xml) are read.

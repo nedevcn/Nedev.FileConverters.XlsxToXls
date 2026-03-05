@@ -43,4 +43,14 @@ internal record struct FontInfo(string Name, double Height, bool Bold, bool Ital
 
 internal record struct NumFmtInfo(int NumFmtId, string FormatCode);
 
-internal record struct CellXfInfo(int NumFmtId, int FontId, int FillId, int BorderId);
+internal record struct CellXfInfo(
+    int NumFmtId,
+    int FontId,
+    int FillId,
+    int BorderId,
+    byte HorizontalAlign,
+    byte VerticalAlign,
+    bool WrapText,
+    byte Indent,
+    bool Locked,
+    bool Hidden);
