@@ -1,0 +1,703 @@
+using System.Buffers.Binary;
+using System.Text;
+
+namespace Nedev.XlsxToXls.Internal;
+
+/// <summary>
+/// Writes BIFF8 records for Excel .xls format. High-performance, minimal allocations.
+/// </summary>
+internal ref struct BiffWriter
+{
+    private Span<byte> _buffer;
+    private int _position;
+
+    public BiffWriter(Span<byte> buffer)
+    {
+        _buffer = buffer;
+        _position = 0;
+    }
+
+    public int Position => _position;
+
+    public void WriteBofWorkbook()
+    {
+        WriteRecordHeader(0x0809, 16);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0600);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0005);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0C0A);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x07CC);
+        _position += 2;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0x00000001);
+        _position += 4;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0006);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0000);
+        _position += 2;
+    }
+
+    public void WriteBofWorksheet()
+    {
+        WriteRecordHeader(0x0809, 16);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0600);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0010);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0C0A);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x07CC);
+        _position += 2;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0x00000001);
+        _position += 4;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0006);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0000);
+        _position += 2;
+    }
+
+    public void WriteCodepage(ushort codepage = 0x04E4)
+    {
+        WriteRecordHeader(0x0042, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), codepage);
+        _position += 2;
+    }
+
+    public void WriteBoundSheet(int streamPosition, string name, byte sheetType = 0)
+    {
+        var nameBytes = Encoding.GetEncoding(1252).GetBytes(name);
+        var len = Math.Min(nameBytes.Length, 31);
+        var recLen = 4 + 1 + 1 + 1 + len;
+        WriteRecordHeader(0x0085, recLen);
+        BinaryPrimitives.WriteInt32LittleEndian(_buffer.Slice(_position), streamPosition);
+        _position += 4;
+        _buffer[_position++] = (byte)len;
+        _buffer[_position++] = sheetType;
+        _buffer[_position++] = 0;
+        nameBytes.AsSpan(0, len).CopyTo(_buffer.Slice(_position));
+        _position += len;
+    }
+
+    public void WriteFont(string name, double heightTwips, bool bold, bool italic)
+    {
+        var nameBytes = Encoding.GetEncoding(1252).GetBytes(name);
+        var len = Math.Min(nameBytes.Length, 255);
+        var recLen = 14 + 1 + len;
+        WriteRecordHeader(0x0031, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)heightTwips);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)((italic ? 2 : 0)));
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x7FFF);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(bold ? 0x02BC : 0x0190));
+        _position += 2;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = (byte)len;
+        nameBytes.AsSpan(0, len).CopyTo(_buffer.Slice(_position));
+        _position += len;
+    }
+
+    public void WriteFormat(int index, string formatCode)
+    {
+        var code = Encoding.Unicode.GetBytes(formatCode);
+        var recLen = 2 + 2 + code.Length;
+        WriteRecordHeader(0x041E, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)index);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(code.Length / 2));
+        _position += 2;
+        code.AsSpan().CopyTo(_buffer.Slice(_position));
+        _position += code.Length;
+    }
+
+    public void WriteBuiltinFmtCount(int count)
+    {
+        WriteRecordHeader(0x001F, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)count);
+        _position += 2;
+    }
+
+    public void WriteXf(int fontIdx, int formatIdx, bool isCellXf = true)
+    {
+        WriteRecordHeader(0x00E0, 20);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)fontIdx);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)formatIdx);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(isCellXf ? 0xFFF0 : 0xFFF0));
+        _position += 2;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = 0;
+        _position += 12;
+    }
+
+    public void WriteEof()
+    {
+        WriteRecordHeader(0x000A, 0);
+    }
+
+    public void WriteWsBool()
+    {
+        WriteRecordHeader(0x0081, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0401);
+        _position += 2;
+    }
+
+    public void WriteDefColWidth(ushort widthChars = 8)
+    {
+        WriteRecordHeader(0x0055, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), widthChars);
+        _position += 2;
+    }
+
+    public void WriteDimension(int firstRow, int lastRowPlus1, int firstCol, int lastColPlus1)
+    {
+        WriteRecordHeader(0x0200, 14);
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), (uint)Math.Max(0, firstRow));
+        _position += 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), (uint)Math.Max(0, lastRowPlus1));
+        _position += 4;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)Math.Clamp(firstCol, 0, 255));
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)Math.Clamp(lastColPlus1, 0, 256));
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+    }
+
+    public void WriteColInfo(int firstCol, int lastCol, double widthChars, bool hidden)
+    {
+        WriteRecordHeader(0x007D, 12);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)firstCol);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)lastCol);
+        _position += 2;
+        var w = (ushort)Math.Clamp((int)(widthChars * 256), 0, 65535);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), w);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 15);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(hidden ? 1 : 0));
+        _position += 2;
+        _position += 2;
+    }
+
+    public void WriteRow(int rowIndex, double heightPoints, bool hidden)
+    {
+        WriteRecordHeader(0x0208, 16);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)rowIndex);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 255);
+        _position += 2;
+        var ht = heightPoints > 0 ? (ushort)(heightPoints * 20) : (ushort)0;
+        var htWord = (ushort)(ht & 0x7FFF);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), htWord);
+        _position += 2;
+        _position += 4;
+        var flags = 0x100u;
+        if (hidden) flags |= 0x20;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), flags);
+        _position += 4;
+    }
+
+    public void WriteMergeCells(ReadOnlySpan<(int FirstRow, int FirstCol, int LastRow, int LastCol)> ranges)
+    {
+        if (ranges.Length == 0) return;
+        var recLen = 2 + ranges.Length * 8;
+        WriteRecordHeader(0x00E5, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)ranges.Length);
+        _position += 2;
+        for (var i = 0; i < ranges.Length; i++)
+        {
+            var r = ranges[i];
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)r.FirstRow);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)r.LastRow);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)r.FirstCol);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)r.LastCol);
+            _position += 2;
+        }
+    }
+
+    public void WriteHorizontalPageBreaks(ReadOnlySpan<(int Row, int FirstCol, int LastCol)> breaks)
+    {
+        if (breaks.Length == 0) return;
+        var recLen = 2 + breaks.Length * 6;
+        WriteRecordHeader(0x001B, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)breaks.Length);
+        _position += 2;
+        for (var i = 0; i < breaks.Length; i++)
+        {
+            var b = breaks[i];
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)b.Row);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)b.FirstCol);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)b.LastCol);
+            _position += 2;
+        }
+    }
+
+    public void WriteVerticalPageBreaks(ReadOnlySpan<(int Col, int FirstRow, int LastRow)> breaks)
+    {
+        if (breaks.Length == 0) return;
+        var recLen = 2 + breaks.Length * 6;
+        WriteRecordHeader(0x001A, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)breaks.Length);
+        _position += 2;
+        for (var i = 0; i < breaks.Length; i++)
+        {
+            var b = breaks[i];
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)b.Col);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)b.FirstRow);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)b.LastRow);
+            _position += 2;
+        }
+    }
+
+    public void WriteLeftMargin(double inches)
+    {
+        WriteRecordHeader(0x0026, 8);
+        BinaryPrimitives.WriteDoubleLittleEndian(_buffer.Slice(_position), inches);
+        _position += 8;
+    }
+
+    public void WriteRightMargin(double inches)
+    {
+        WriteRecordHeader(0x0027, 8);
+        BinaryPrimitives.WriteDoubleLittleEndian(_buffer.Slice(_position), inches);
+        _position += 8;
+    }
+
+    public void WriteTopMargin(double inches)
+    {
+        WriteRecordHeader(0x0028, 8);
+        BinaryPrimitives.WriteDoubleLittleEndian(_buffer.Slice(_position), inches);
+        _position += 8;
+    }
+
+    public void WriteBottomMargin(double inches)
+    {
+        WriteRecordHeader(0x0029, 8);
+        BinaryPrimitives.WriteDoubleLittleEndian(_buffer.Slice(_position), inches);
+        _position += 8;
+    }
+
+    public void WritePageSetup(bool landscape, int scale, int startPage, int fitToWidth, int fitToHeight, double headerMargin, double footerMargin)
+    {
+        const int recLen = 34;
+        WriteRecordHeader(0x00A1, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 1);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)Math.Clamp(scale, 0, 65535));
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)Math.Clamp(startPage, 0, 65535));
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)Math.Clamp(fitToWidth, 0, 65535));
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)Math.Clamp(fitToHeight, 0, 65535));
+        _position += 2;
+        ushort flags = 0x0004;
+        if (landscape) flags |= 0x0002;
+        flags |= 0x0080;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), flags);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 600);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 600);
+        _position += 2;
+        BinaryPrimitives.WriteDoubleLittleEndian(_buffer.Slice(_position), headerMargin);
+        _position += 8;
+        BinaryPrimitives.WriteDoubleLittleEndian(_buffer.Slice(_position), footerMargin);
+        _position += 8;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 1);
+        _position += 2;
+    }
+
+    public void WriteWindow2(bool freezePanes = false)
+    {
+        WriteRecordHeader(0x003E, 18);
+        var flags = (ushort)0x06B6;
+        if (freezePanes) flags |= 0x0008;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), flags);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        _position += 12;
+    }
+
+    public void WritePane(ushort px, ushort py, ushort topRowVisible, ushort leftColVisible, byte activePane)
+    {
+        WriteRecordHeader(0x0041, 9);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), px);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), py);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), topRowVisible);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), leftColVisible);
+        _position += 2;
+        _buffer[_position++] = Math.Clamp(activePane, (byte)0, (byte)3);
+    }
+
+    public void WriteObjNote(ushort objectId)
+    {
+        const int totalLen = 60;
+        WriteRecordHeader(0x005D, totalLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x15);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 22);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x19);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), objectId);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0002);
+        _position += 2;
+        _position += 16;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0D);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 26);
+        _position += 2;
+        _position += 26;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+    }
+
+    public void WriteTxoWithText(ReadOnlySpan<char> text)
+    {
+        var need16 = false;
+        foreach (var c in text) { if (c > 255) { need16 = true; break; } }
+        var maxCch = need16 ? 4111 : 8222;
+        var cch = Math.Min(text.Length, maxCch);
+        var textSpan = text.Slice(0, cch);
+        WriteRecordHeader(0x01B6, 18);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0);
+        _position += 4;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)cch);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 16);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        var textBytes = 1 + (need16 ? cch * 2 : cch);
+        WriteRecordHeader(0x003C, textBytes);
+        _buffer[_position++] = (byte)(need16 ? 1 : 0);
+        if (need16)
+            for (var i = 0; i < textSpan.Length; i++)
+                BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + i * 2), textSpan[i]);
+        else
+            for (var i = 0; i < textSpan.Length; i++)
+                _buffer[_position + i] = (byte)textSpan[i];
+        _position += need16 ? textSpan.Length * 2 : textSpan.Length;
+        WriteRecordHeader(0x003C, 16);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)cch);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        _position += 8;
+    }
+
+    public void WriteNote(int row, int col, bool visible, ushort shapeId, ReadOnlySpan<char> author)
+    {
+        var needs16 = false;
+        foreach (var c in author)
+        {
+            if (c > 255) { needs16 = true; break; }
+        }
+        var charCount = author.Length;
+        var recLen = 8 + 1 + 2 + (needs16 ? charCount * 2 : charCount);
+        WriteRecordHeader(0x001C, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)row);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)col);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(visible ? 2 : 0));
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), shapeId);
+        _position += 2;
+        _buffer[_position++] = (byte)(needs16 ? 1 : 0);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)charCount);
+        _position += 2;
+        if (needs16)
+            for (var i = 0; i < author.Length; i++)
+                BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + i * 2), author[i]);
+        else
+            for (var i = 0; i < author.Length; i++)
+                _buffer[_position + i] = (byte)author[i];
+        _position += needs16 ? author.Length * 2 : author.Length;
+    }
+
+    private static readonly byte[] StdLinkGuid = { 0xD0, 0xC9, 0xEA, 0x79, 0xF9, 0xBA, 0xCE, 0x11, 0x8C, 0x82, 0x00, 0xAA, 0x00, 0x4B, 0xA9, 0x0B };
+    private static readonly byte[] UrlMonikerGuid = { 0xE0, 0xC9, 0xEA, 0x79, 0xF9, 0xBA, 0xCE, 0x11, 0x8C, 0x82, 0x00, 0xAA, 0x00, 0x4B, 0xA9, 0x0B };
+
+    public void WriteHyperlink(int firstRow, int firstCol, int lastRow, int lastCol, ReadOnlySpan<char> url)
+    {
+        var urlLen = url.Length + 1;
+        var urlBytes = urlLen * 2;
+        var recLen = 8 + 16 + 4 + 4 + 16 + 4 + urlBytes;
+        WriteRecordHeader(0x01B8, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)firstRow);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)lastRow);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)firstCol);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)lastCol);
+        _position += 2;
+        StdLinkGuid.CopyTo(_buffer.Slice(_position));
+        _position += 16;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0x00000002u);
+        _position += 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0x00000003u);
+        _position += 4;
+        UrlMonikerGuid.CopyTo(_buffer.Slice(_position));
+        _position += 16;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), (uint)urlBytes);
+        _position += 4;
+        for (var i = 0; i < url.Length; i++)
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + i * 2), url[i]);
+        _position += url.Length * 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+    }
+
+    public void WriteBlank(int row, int col, ushort xfIndex = 15)
+    {
+        WriteRecordHeader(0x0201, 6);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)row);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)col);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), xfIndex);
+        _position += 2;
+    }
+
+    public void WriteBool(int row, int col, bool value, ushort xfIndex = 15)
+    {
+        WriteRecordHeader(0x0205, 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)row);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)col);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), xfIndex);
+        _position += 2;
+        _buffer[_position++] = (byte)(value ? 1 : 0);
+        _buffer[_position++] = 0;
+    }
+
+    public void WriteError(int row, int col, byte errorCode, ushort xfIndex = 15)
+    {
+        WriteRecordHeader(0x0205, 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)row);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)col);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), xfIndex);
+        _position += 2;
+        _buffer[_position++] = Math.Clamp(errorCode, (byte)0, (byte)42);
+        _buffer[_position++] = 1;
+    }
+
+    public void WriteNumber(int row, int col, double value, ushort xfIndex = 15)
+    {
+        WriteRecordHeader(0x0203, 14);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)row);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)col);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), xfIndex);
+        _position += 2;
+        BinaryPrimitives.WriteDoubleLittleEndian(_buffer.Slice(_position), value);
+        _position += 8;
+    }
+
+    public void WriteLabel(int row, int col, ReadOnlySpan<char> text, ushort xfIndex = 15)
+    {
+        var needs16Bit = false;
+        foreach (var c in text)
+        {
+            if (c > 255) { needs16Bit = true; break; }
+        }
+        var charCount = text.Length;
+        var byteCount = needs16Bit ? charCount * 2 : charCount;
+        var recLen = 6 + 1 + 2 + byteCount;
+        WriteRecordHeader(0x0204, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)row);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)col);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), xfIndex);
+        _position += 2;
+        _buffer[_position++] = (byte)(needs16Bit ? 0 : 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)charCount);
+        _position += 2;
+        if (needs16Bit)
+        {
+            for (var i = 0; i < text.Length; i++)
+                BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + i * 2), text[i]);
+            _position += byteCount;
+        }
+        else
+        {
+            for (var i = 0; i < text.Length; i++)
+                _buffer[_position++] = (byte)text[i];
+        }
+    }
+
+    public void WriteLabelSst(int row, int col, int sstIndex, ushort xfIndex = 15)
+    {
+        WriteRecordHeader(0x00FD, 8);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)row);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)col);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), xfIndex);
+        _position += 2;
+        BinaryPrimitives.WriteInt32LittleEndian(_buffer.Slice(_position), sstIndex);
+        _position += 4;
+    }
+
+    public void WriteDatavalidations(int count, bool showPrompt = true)
+    {
+        if (count <= 0) return;
+        WriteRecordHeader(0x01B2, 18);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(showPrompt ? 0x0004 : 0));
+        _position += 2;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0);
+        _position += 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0);
+        _position += 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0xFFFFFFFF);
+        _position += 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), (uint)count);
+        _position += 4;
+    }
+
+    public void WriteDatavalidation(DataValidationInfo dv)
+    {
+        var f1 = BuildListFormula1(dv.Type, dv.Formula1);
+        var f2 = BuildListFormula1(0, dv.Formula2);
+        var lenPromptTitle = 2 + 1 + (HasHighChar(dv.PromptTitle) ? dv.PromptTitle.Length * 2 : dv.PromptTitle.Length);
+        var lenErrorTitle = 2 + 1 + (HasHighChar(dv.ErrorTitle) ? dv.ErrorTitle.Length * 2 : dv.ErrorTitle.Length);
+        var lenPromptText = 2 + 1 + (HasHighChar(dv.PromptText) ? dv.PromptText.Length * 2 : dv.PromptText.Length);
+        var lenErrorText = 2 + 1 + (HasHighChar(dv.ErrorText) ? dv.ErrorText.Length * 2 : dv.ErrorText.Length);
+        var recLen = 4 + lenPromptTitle + lenErrorTitle + lenPromptText + lenErrorText + 4 + f1.Length + 4 + f2.Length + 2 + dv.Ranges.Count * 8;
+        WriteRecordHeader(0x01BE, recLen);
+        var flags = (uint)(dv.Type & 0x0F) | ((uint)(dv.Operator & 0x0F) << 20) | (dv.AllowBlank ? 0x100u : 0) | (dv.Type == 3 && dv.Formula1.IndexOf(',') >= 0 ? 0x80u : 0) | (dv.ShowPrompt ? 0x40000u : 0) | (dv.ShowError ? 0x80000u : 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), flags);
+        _position += 4;
+        WriteBiff8UnicodeString16(dv.PromptTitle);
+        WriteBiff8UnicodeString16(dv.ErrorTitle);
+        WriteBiff8UnicodeString16(dv.PromptText);
+        WriteBiff8UnicodeString16(dv.ErrorText);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)f1.Length);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        f1.CopyTo(_buffer.Slice(_position));
+        _position += f1.Length;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)f2.Length);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        f2.CopyTo(_buffer.Slice(_position));
+        _position += f2.Length;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)dv.Ranges.Count);
+        _position += 2;
+        foreach (var (fr, fc, lr, lc) in dv.Ranges)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)fr);
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + 2), (ushort)lr);
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + 4), (ushort)fc);
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + 6), (ushort)lc);
+            _position += 8;
+        }
+    }
+
+    private static bool HasHighChar(ReadOnlySpan<char> s)
+    {
+        foreach (var c in s) if (c > 255) return true;
+        return false;
+    }
+
+    private static byte[] BuildListFormula1(int type, string formula1)
+    {
+        if (type != 3 || string.IsNullOrEmpty(formula1)) return [];
+        var items = formula1.Split(',');
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < items.Length; i++)
+        {
+            if (i > 0) sb.Append('\0');
+            sb.Append(items[i].Trim());
+        }
+        var s = sb.ToString();
+        if (s.Length > 255) return [];
+        var need16 = HasHighChar(s.AsSpan());
+        var list = new List<byte> { 0x17, (byte)(need16 ? 1 : 0), (byte)s.Length };
+        if (need16)
+            foreach (var c in s)
+            {
+                list.Add((byte)(c & 0xFF));
+                list.Add((byte)((c >> 8) & 0xFF));
+            }
+        else
+            foreach (var c in s)
+                list.Add((byte)c);
+        return list.ToArray();
+    }
+
+    private void WriteBiff8UnicodeString16(ReadOnlySpan<char> s)
+    {
+        var need16 = false;
+        foreach (var c in s) { if (c > 255) { need16 = true; break; } }
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)s.Length);
+        _position += 2;
+        _buffer[_position++] = (byte)(need16 ? 1 : 0);
+        if (need16)
+            for (var i = 0; i < s.Length; i++)
+                BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + i * 2), s[i]);
+        else
+            for (var i = 0; i < s.Length; i++)
+                _buffer[_position + i] = (byte)s[i];
+        _position += need16 ? s.Length * 2 : s.Length;
+    }
+
+    private void WriteRecordHeader(ushort type, int length)
+    {
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), type);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)length);
+        _position += 2;
+    }
+}
