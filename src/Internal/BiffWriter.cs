@@ -79,6 +79,64 @@ internal ref struct BiffWriter
         _position += len;
     }
 
+    public void WriteSupBookInternalRef(int sheetCount)
+    {
+        WriteRecordHeader(0x01AE, 4);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)sheetCount);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0401);
+        _position += 2;
+    }
+
+    public void WriteExternSheet(int sheetCount)
+    {
+        var recLen = 2 + sheetCount * 6;
+        WriteRecordHeader(0x0017, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)sheetCount);
+        _position += 2;
+        for (var i = 0; i < sheetCount; i++)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)i);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)i);
+            _position += 2;
+        }
+    }
+
+    public void WriteNameBuiltin(DefinedNameInfo dn, ushort externSheetIndex)
+    {
+        const int formulaLen = 11;
+        var recLen = 2 + 1 + 1 + 2 + 2 + 2 + 4 + 2 + formulaLen;
+        WriteRecordHeader(0x0018, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0020);
+        _position += 2;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = 1;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), formulaLen);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(dn.SheetIndex0Based + 1));
+        _position += 2;
+        _position += 4;
+        _buffer[_position++] = 0;
+        _buffer[_position++] = dn.BuiltinIndex;
+        _buffer[_position++] = 0x3B;
+        _position += 1;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), externSheetIndex);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)dn.FirstRow);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)dn.LastRow);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)dn.FirstCol);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)dn.LastCol);
+        _position += 2;
+    }
+
     public void WriteFont(string name, double heightTwips, bool bold, bool italic)
     {
         var nameBytes = Encoding.GetEncoding(1252).GetBytes(name);

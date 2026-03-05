@@ -18,13 +18,13 @@ public static class XlsxToXlsConverter
     /// <param name="xlsStream">Output XLS stream (writable)</param>
     public static void Convert(Stream xlsxStream, Stream xlsStream)
     {
-        var (sharedStrings, sheets, styles) = XlsxReader.Read(xlsxStream);
+        var (sharedStrings, sheets, styles, definedNames) = XlsxReader.Read(xlsxStream);
         var stylesData = styles ?? CreateDefaultStyles();
-        var biffSize = EstimateBiffSize(sharedStrings, sheets, stylesData);
+        var biffSize = EstimateBiffSize(sharedStrings, sheets, stylesData, definedNames);
         var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(biffSize, 256 * 1024));
         try
         {
-            var written = WriteBiff(buffer.AsSpan(), sharedStrings, sheets, stylesData);
+            var written = WriteBiff(buffer.AsSpan(), sharedStrings, sheets, stylesData, definedNames);
             var ole = new OleCompoundWriter("Workbook");
             ole.WriteStream(buffer.AsSpan(0, written));
             ole.WriteTo(xlsStream);
@@ -53,7 +53,7 @@ public static class XlsxToXlsConverter
         return s;
     }
 
-    private static int EstimateBiffSize(List<ReadOnlyMemory<char>> sharedStrings, List<SheetData> sheets, StylesData styles)
+    private static int EstimateBiffSize(List<ReadOnlyMemory<char>> sharedStrings, List<SheetData> sheets, StylesData styles, List<DefinedNameInfo> definedNames)
     {
         var n = 1024;
         foreach (var s in sharedStrings)
@@ -71,6 +71,11 @@ public static class XlsxToXlsConverter
             }
             foreach (var dv in sheet.DataValidations)
                 n += 30 + dv.Ranges.Count * 8 + (dv.PromptTitle.Length + dv.ErrorTitle.Length + dv.PromptText.Length + dv.ErrorText.Length) * 2 + dv.Formula1.Length + dv.Formula2.Length;
+        }
+        if (definedNames.Count > 0)
+            n += 8 + (4 + 2 + sheets.Count * 6) + definedNames.Count * (4 + 27);
+        foreach (var sheet in sheets)
+        {
             foreach (var row in sheet.Rows)
                 n += row.Cells.Length * 40 + 32;
         }
@@ -78,7 +83,7 @@ public static class XlsxToXlsConverter
         return Math.Max(n, 256 * 1024);
     }
 
-    private static int WriteBiff(Span<byte> buffer, List<ReadOnlyMemory<char>> sharedStrings, List<SheetData> sheets, StylesData styles)
+    private static int WriteBiff(Span<byte> buffer, List<ReadOnlyMemory<char>> sharedStrings, List<SheetData> sheets, StylesData styles, List<DefinedNameInfo> definedNames)
     {
         var pos = 0;
         var bw = new BiffWriter(buffer);
@@ -134,8 +139,13 @@ public static class XlsxToXlsConverter
                 var nameBytes = Math.Min(cp1252.GetByteCount(name), 31);
                 boundsheetLen += 4 + 4 + 1 + 1 + 1 + nameBytes;
             }
+            var externNameLen = 0;
+            if (definedNames.Count > 0)
+            {
+                externNameLen += 8 + (4 + 2 + sheets.Count * 6) + definedNames.Count * (4 + 27);
+            }
             var eofLen = 4;
-            var firstSheetOffset = pos + boundsheetLen + eofLen;
+            var firstSheetOffset = pos + boundsheetLen + externNameLen + eofLen;
 
             var offset = firstSheetOffset;
             for (var i = 0; i < sheets.Count; i++)
@@ -147,6 +157,22 @@ public static class XlsxToXlsConverter
                 var nameBytes = Math.Min(cp1252.GetByteCount(name), 31);
                 pos += 4 + 4 + 1 + 1 + 1 + nameBytes;
                 offset += sheetSizes[i];
+            }
+
+            if (definedNames.Count > 0)
+            {
+                bw = new BiffWriter(buffer.Slice(pos));
+                bw.WriteSupBookInternalRef(sheets.Count);
+                pos += 8;
+                bw = new BiffWriter(buffer.Slice(pos));
+                bw.WriteExternSheet(sheets.Count);
+                pos += 4 + 2 + sheets.Count * 6;
+                foreach (var dn in definedNames)
+                {
+                    bw = new BiffWriter(buffer.Slice(pos));
+                    bw.WriteNameBuiltin(dn, (ushort)dn.SheetIndex0Based);
+                    pos += 4 + 27;
+                }
             }
 
             bw = new BiffWriter(buffer.Slice(pos));

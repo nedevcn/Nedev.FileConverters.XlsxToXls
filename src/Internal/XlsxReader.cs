@@ -18,13 +18,13 @@ internal static partial class XlsxReader
         ConformanceLevel = ConformanceLevel.Fragment
     };
 
-    public static (List<ReadOnlyMemory<char>> SharedStrings, List<SheetData> Sheets, StylesData? Styles) Read(Stream xlsxStream)
+    public static (List<ReadOnlyMemory<char>> SharedStrings, List<SheetData> Sheets, StylesData? Styles, List<DefinedNameInfo> DefinedNames) Read(Stream xlsxStream)
     {
         using var archive = new ZipArchive(xlsxStream, ZipArchiveMode.Read, leaveOpen: true);
         var sharedStrings = ReadSharedStrings(archive);
-        var sheets = ReadSheets(archive);
+        var (sheets, definedNames) = ReadSheetsAndDefinedNames(archive);
         var styles = StylesReader.Read(archive);
-        return (sharedStrings, sheets, styles);
+        return (sharedStrings, sheets, styles, definedNames);
     }
 
     private static List<ReadOnlyMemory<char>> ReadSharedStrings(ZipArchive archive)
@@ -86,10 +86,10 @@ internal static partial class XlsxReader
         return sb.ToString();
     }
 
-    private static List<SheetData> ReadSheets(ZipArchive archive)
+    private static (List<SheetData> Sheets, List<DefinedNameInfo> DefinedNames) ReadSheetsAndDefinedNames(ZipArchive archive)
     {
         var rels = ReadWorkbookRels(archive);
-        var sheetIds = ReadSheetIds(archive);
+        var (sheetIds, definedNames) = ReadSheetIdsAndDefinedNames(archive);
         var list = new List<SheetData>();
         foreach (var (name, rId) in sheetIds)
         {
@@ -98,7 +98,7 @@ internal static partial class XlsxReader
             var comments = ReadSheetComments(archive, path);
             list.Add(new SheetData(name, rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, comments, dataValidations));
         }
-        return list;
+        return (list, definedNames);
     }
 
     private static Dictionary<string, string> ReadWorkbookRels(ZipArchive archive)
@@ -132,11 +132,12 @@ internal static partial class XlsxReader
         return dict;
     }
 
-    private static List<(string Name, string RId)> ReadSheetIds(ZipArchive archive)
+    private static (List<(string Name, string RId)> SheetIds, List<DefinedNameInfo> DefinedNames) ReadSheetIdsAndDefinedNames(ZipArchive archive)
     {
-        var list = new List<(string, string)>();
+        var sheetIds = new List<(string, string)>();
+        var definedNames = new List<DefinedNameInfo>();
         var entry = archive.GetEntry("xl/workbook.xml");
-        if (entry == null) return list;
+        if (entry == null) return (sheetIds, definedNames);
 
         using var stream = entry.Open();
         using var reader = XmlReader.Create(stream, Sds);
@@ -148,10 +149,70 @@ internal static partial class XlsxReader
                 var name = reader.GetAttribute("name") ?? "Sheet";
                 var rId = reader.GetAttribute("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id") ?? reader.GetAttribute("id");
                 if (rId != null)
-                    list.Add((name, rId));
+                    sheetIds.Add((name, rId));
+            }
+            else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "definedName" && reader.NamespaceURI == ns)
+            {
+                var nameAttr = reader.GetAttribute("name");
+                var localSheetId = ParseInt(reader.GetAttribute("localSheetId"));
+                if (localSheetId < 0) localSheetId = 0;
+                var formula = reader.ReadElementContentAsString();
+                if (string.IsNullOrEmpty(nameAttr)) continue;
+                var name = nameAttr.Trim();
+                byte builtin = name switch
+                {
+                    "Print_Area" or "_xlnm.Print_Area" => 6,
+                    "Print_Titles" or "_xlnm.Print_Titles" => 7,
+                    _ => 0
+                };
+                if (builtin == 0) continue;
+                if (!TryParseDefinedNameRange(formula, out var firstRow, out var firstCol, out var lastRow, out var lastCol))
+                    continue;
+                definedNames.Add(new DefinedNameInfo(localSheetId, builtin, firstRow, firstCol, lastRow, lastCol));
             }
         }
-        return list;
+        return (sheetIds, definedNames);
+    }
+
+    private static bool TryParseDefinedNameRange(string formula, out int firstRow, out int firstCol, out int lastRow, out int lastCol)
+    {
+        firstRow = firstCol = 0;
+        lastRow = lastCol = -1;
+        var refPart = formula;
+        var excl = formula.IndexOf('!');
+        if (excl >= 0 && excl + 1 < formula.Length)
+            refPart = formula[(excl + 1)..].Trim();
+        refPart = refPart.Replace("$", "");
+        if (string.IsNullOrEmpty(refPart)) return false;
+        var colon = refPart.IndexOf(':');
+        if (colon < 0) return false;
+        var left = refPart[..colon].Trim();
+        var right = refPart[(colon + 1)..].Trim();
+        if (string.IsNullOrEmpty(left) || string.IsNullOrEmpty(right)) return false;
+        if (left.Length <= 5 && right.Length <= 5 && int.TryParse(left, out var row1) && int.TryParse(right, out var row2))
+        {
+            firstRow = Math.Max(0, row1 - 1);
+            lastRow = Math.Min(65535, row2 - 1);
+            firstCol = 0;
+            lastCol = 255;
+            return true;
+        }
+        if (left.Length >= 1 && char.IsLetter(left[0]) && right.Length >= 1 && char.IsLetter(right[0]) &&
+            !int.TryParse(left, out _) && !int.TryParse(right, out _))
+        {
+            firstCol = ParseColRef(left.AsSpan());
+            lastCol = ParseColRef(right.AsSpan());
+            firstRow = 0;
+            lastRow = 65535;
+            return firstCol >= 0 && lastCol >= 0 && firstCol <= 255 && lastCol <= 255;
+        }
+        var (r1, c1) = ParseCellRef(left);
+        var (r2, c2) = ParseCellRef(right);
+        firstRow = Math.Min(r1, r2);
+        lastRow = Math.Max(r1, r2);
+        firstCol = Math.Min(c1, c2);
+        lastCol = Math.Max(c1, c2);
+        return firstRow <= lastRow && firstCol <= lastCol;
     }
 
     private static (List<RowData> Rows, List<ColInfo> ColInfos, List<MergeRange> MergeRanges, FreezePaneInfo? FreezePane, List<int> RowBreaks, List<int> ColBreaks, PageSetupInfo? PageSetup, PageMarginsInfo? PageMargins, List<HyperlinkInfo> Hyperlinks, List<DataValidationInfo> DataValidations) ReadWorksheet(ZipArchive archive, string path)
@@ -597,6 +658,8 @@ internal record struct DataValidationInfo(
     string ErrorTitle,
     string PromptText,
     string ErrorText);
+
+internal record struct DefinedNameInfo(int SheetIndex0Based, byte BuiltinIndex, int FirstRow, int FirstCol, int LastRow, int LastCol);
 
 internal record struct CommentInfo(int Row, int Col, string Author, string Text);
 internal record struct HyperlinkInfo(int FirstRow, int FirstCol, int LastRow, int LastCol, string Url);

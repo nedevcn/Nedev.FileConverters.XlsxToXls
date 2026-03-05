@@ -87,13 +87,15 @@ XlsxToXlsConverter.ConvertFile("input.xlsx", "output.xls");
 | Vertical page breaks | `colBreaks/brk` | VERTICALPAGEBREAKS |
 | Page setup | `pageSetup` (orientation, scale, fitToWidth/Height) | PAGESETUP |
 | Margins | `pageMargins` | LEFTMARGIN, RIGHTMARGIN, TOPMARGIN, BOTTOMMARGIN |
+| Print area | `definedName` Print_Area / _xlnm.Print_Area in workbook.xml | NAME (Lbl) + ptgArea3D |
+| Print titles (rows/cols) | `definedName` Print_Titles / _xlnm.Print_Titles in workbook.xml | NAME (Lbl) + ptgArea3D |
 
 ### Hyperlinks, comments & data validation
 
 | Feature | XLSX source | BIFF output |
 |---------|-------------|-------------|
 | Cell/range hyperlinks (URLs) | `<hyperlink ref="..." r:id="...">` + sheet rels | HYPERLINK (URL moniker) |
-| Cell comments (notes) | `commentsN.xml` (authors + commentList) | NOTE (cell, author); comment text not in BIFF text box (no OBJ/TXO) |
+| Cell comments (notes) | `commentsN.xml` (authors + commentList) | NOTE + OBJ + TXO/CONTINUE (cell, author, text) |
 | Data validation | `dataValidations` / `dataValidation` (sqref, type, formula1/2) | DATAVALIDATIONS + DATAVALIDATION; **list** type with explicit comma-separated list supported (formula as tStr); other types written with flags/ranges/prompt/error strings, formula RPN not implemented |
 
 ### Shared string table (SST)
@@ -105,12 +107,10 @@ XlsxToXlsConverter.ConvertFile("input.xlsx", "output.xls");
 ## Not supported (current limitations)
 
 - **Formulas** — only cached values are converted; formula expressions are not written as FORMULA records.
-- **Comment text in BIFF** — NOTE records store cell and author; the visible comment text would require OBJ/TXO and is not implemented.
 - **Data validation** — List type with explicit list (e.g. `formula1="A,B,C"`) is supported; types that need formula RPN (references, custom formulas) are written with metadata only, no condition formulas.
 - **Conditional formatting** — not implemented.
 - **Charts, images, drawings** — not implemented.
 - **Threaded comments** — only legacy comments (commentsN.xml) are read.
-- **Print area / repeated rows** — would require DEFINEDNAME with formula RPN; not implemented.
 
 ---
 
