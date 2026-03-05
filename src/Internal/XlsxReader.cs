@@ -94,9 +94,9 @@ internal static partial class XlsxReader
         foreach (var (name, rId) in sheetIds)
         {
             if (!rels.TryGetValue(rId, out var path)) continue;
-            var (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, dataValidations) = ReadWorksheet(archive, path);
+            var (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, dataValidations, conditionalFormats) = ReadWorksheet(archive, path);
             var comments = ReadSheetComments(archive, path);
-            list.Add(new SheetData(name, rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, comments, dataValidations));
+            list.Add(new SheetData(name, rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, comments, dataValidations, conditionalFormats));
         }
         return (list, definedNames);
     }
@@ -215,10 +215,10 @@ internal static partial class XlsxReader
         return firstRow <= lastRow && firstCol <= lastCol;
     }
 
-    private static (List<RowData> Rows, List<ColInfo> ColInfos, List<MergeRange> MergeRanges, FreezePaneInfo? FreezePane, List<int> RowBreaks, List<int> ColBreaks, PageSetupInfo? PageSetup, PageMarginsInfo? PageMargins, List<HyperlinkInfo> Hyperlinks, List<DataValidationInfo> DataValidations) ReadWorksheet(ZipArchive archive, string path)
+    private static (List<RowData> Rows, List<ColInfo> ColInfos, List<MergeRange> MergeRanges, FreezePaneInfo? FreezePane, List<int> RowBreaks, List<int> ColBreaks, PageSetupInfo? PageSetup, PageMarginsInfo? PageMargins, List<HyperlinkInfo> Hyperlinks, List<DataValidationInfo> DataValidations, List<ConditionalFormatInfo> ConditionalFormats) ReadWorksheet(ZipArchive archive, string path)
     {
         var entry = archive.GetEntry(path) ?? archive.GetEntry("xl/" + path);
-        if (entry == null) return ([], [], [], null, [], [], null, null, [], []);
+        if (entry == null) return (new List<RowData>(), new List<ColInfo>(), new List<MergeRange>(), null, new List<int>(), new List<int>(), null, null, new List<HyperlinkInfo>(), new List<DataValidationInfo>(), new List<ConditionalFormatInfo>());
 
         var rows = new List<RowData>();
         var colInfos = new List<ColInfo>();
@@ -227,6 +227,7 @@ internal static partial class XlsxReader
         var colBreaks = new List<int>();
         var hyperlinks = new List<HyperlinkInfo>();
         var dataValidations = new List<DataValidationInfo>();
+        var conditionalFormats = new List<ConditionalFormatInfo>();
         var sharedFormulas = new Dictionary<int, (int BaseRow, int BaseCol, string Formula)>();
         FreezePaneInfo? freezePane = null;
         PageSetupInfo? pageSetup = null;
@@ -303,6 +304,10 @@ internal static partial class XlsxReader
                 if (dv.HasValue && dv.Value.Ranges.Count > 0)
                     dataValidations.Add(dv.Value);
             }
+            else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "conditionalFormatting" && reader.NamespaceURI == ns)
+            {
+                ReadConditionalFormatting(reader, ns, conditionalFormats);
+            }
             else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "hyperlink" && reader.NamespaceURI == ns)
             {
                 var refAttr = reader.GetAttribute("ref");
@@ -342,7 +347,7 @@ internal static partial class XlsxReader
             currentRow = currentRow.Value with { Cells = cells.ToArray() };
             rows.Add(currentRow.Value);
         }
-        return (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, dataValidations);
+        return (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, hyperlinks, dataValidations, conditionalFormats);
     }
 
     private static DataValidationInfo? ReadDataValidation(XmlReader reader, string ns)
@@ -404,6 +409,60 @@ internal static partial class XlsxReader
             }
         }
         return dict;
+    }
+
+    private static void ReadConditionalFormatting(XmlReader reader, string ns, List<ConditionalFormatInfo> list)
+    {
+        var sqref = reader.GetAttribute("sqref");
+        var ranges = new List<(int FirstRow, int FirstCol, int LastRow, int LastCol)>();
+        if (!string.IsNullOrEmpty(sqref))
+        {
+            foreach (var refPart in sqref.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                if (ParseRefToRange(refPart) is (int fr, int fc, int lr, int lc))
+                    ranges.Add((fr, fc, lr, lc));
+        }
+        if (reader.IsEmptyElement) return;
+        while (reader.Read())
+        {
+            if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "conditionalFormatting" && reader.NamespaceURI == ns)
+                break;
+            if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "cfRule" || reader.NamespaceURI != ns)
+                continue;
+
+            var typeStr = reader.GetAttribute("type") ?? "cellIs";
+            var opStr = reader.GetAttribute("operator") ?? "between";
+            var ct = string.Equals(typeStr, "expression", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
+            var cp = opStr.ToLowerInvariant() switch
+            {
+                "between" => 1,
+                "notBetween" => 2,
+                "equal" => 3,
+                "notEqual" => 4,
+                "greaterThan" => 5,
+                "lessThan" => 6,
+                "greaterThanOrEqual" => 7,
+                "lessThanOrEqual" => 8,
+                _ => 0
+            };
+            string? f1 = null, f2 = null;
+            if (!reader.IsEmptyElement)
+            {
+                while (reader.Read())
+                {
+                    if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "cfRule" && reader.NamespaceURI == ns)
+                        break;
+                    if (reader.NodeType != XmlNodeType.Element || reader.NamespaceURI != ns) continue;
+                    if (reader.LocalName == "formula" && reader.Read() && reader.NodeType == XmlNodeType.Text)
+                    {
+                        if (f1 == null) f1 = reader.Value;
+                        else if (f2 == null) f2 = reader.Value;
+                    }
+                }
+            }
+
+            if (ranges.Count > 0)
+                list.Add(new ConditionalFormatInfo(ranges, ct, cp, f1 ?? string.Empty, f2 ?? string.Empty));
+        }
     }
 
     private static List<CommentInfo> ReadSheetComments(ZipArchive archive, string worksheetPath)
@@ -776,7 +835,8 @@ internal record struct SheetData(
     PageMarginsInfo? PageMargins,
     List<HyperlinkInfo> Hyperlinks,
     List<CommentInfo> Comments,
-    List<DataValidationInfo> DataValidations);
+    List<DataValidationInfo> DataValidations,
+    List<ConditionalFormatInfo> ConditionalFormats);
 
 internal record struct DataValidationInfo(
     List<(int FirstRow, int FirstCol, int LastRow, int LastCol)> Ranges,
@@ -793,6 +853,13 @@ internal record struct DataValidationInfo(
     string ErrorText);
 
 internal record struct DefinedNameInfo(int SheetIndex0Based, byte BuiltinIndex, int FirstRow, int FirstCol, int LastRow, int LastCol);
+
+internal record struct ConditionalFormatInfo(
+    List<(int FirstRow, int FirstCol, int LastRow, int LastCol)> Ranges,
+    int Type,
+    int Operator,
+    string Formula1,
+    string Formula2);
 
 internal record struct CommentInfo(int Row, int Col, string Author, string Text);
 internal record struct HyperlinkInfo(int FirstRow, int FirstCol, int LastRow, int LastCol, string Url);
