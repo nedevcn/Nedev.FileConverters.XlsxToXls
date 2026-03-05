@@ -72,8 +72,8 @@ public static class XlsxToXlsConverter
             foreach (var dv in sheet.DataValidations)
                 n += 30 + dv.Ranges.Count * 8 + (dv.PromptTitle.Length + dv.ErrorTitle.Length + dv.PromptText.Length + dv.ErrorText.Length) * 2 + dv.Formula1.Length + dv.Formula2.Length;
         }
-        if (definedNames.Count > 0)
-            n += 8 + (4 + 2 + sheets.Count * 6) + definedNames.Count * (4 + 27);
+        if (sheets.Count > 0)
+            n += 8 + (4 + 2 + sheets.Count * 6) + (definedNames.Count > 0 ? definedNames.Count * (4 + 27) : 0);
         foreach (var sheet in sheets)
         {
             foreach (var row in sheet.Rows)
@@ -121,14 +121,19 @@ public static class XlsxToXlsConverter
             pos += sstSize;
         }
 
+        var sheetIndexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < sheets.Count; i++)
+            if (!sheetIndexByName.ContainsKey(sheets[i].Name))
+                sheetIndexByName[sheets[i].Name] = i;
+
         var cp1252 = Encoding.GetEncoding(1252);
         var tempBuf = ArrayPool<byte>.Shared.Rent(64 * 1024);
         var sheetSizes = new List<int>();
         try
         {
-            foreach (var sheet in sheets)
+            for (var i = 0; i < sheets.Count; i++)
             {
-                var sz = WriteSheet(tempBuf.AsSpan(), sheet, sharedStrings, styles);
+                var sz = WriteSheet(tempBuf.AsSpan(), sheets[i], sharedStrings, styles, i, sheetIndexByName);
                 sheetSizes.Add(sz);
             }
 
@@ -139,11 +144,7 @@ public static class XlsxToXlsConverter
                 var nameBytes = Math.Min(cp1252.GetByteCount(name), 31);
                 boundsheetLen += 4 + 4 + 1 + 1 + 1 + nameBytes;
             }
-            var externNameLen = 0;
-            if (definedNames.Count > 0)
-            {
-                externNameLen += 8 + (4 + 2 + sheets.Count * 6) + definedNames.Count * (4 + 27);
-            }
+            var externNameLen = sheets.Count > 0 ? (8 + (4 + 2 + sheets.Count * 6) + definedNames.Count * (4 + 27)) : 0;
             var eofLen = 4;
             var firstSheetOffset = pos + boundsheetLen + externNameLen + eofLen;
 
@@ -159,7 +160,7 @@ public static class XlsxToXlsConverter
                 offset += sheetSizes[i];
             }
 
-            if (definedNames.Count > 0)
+            if (sheets.Count > 0)
             {
                 bw = new BiffWriter(buffer.Slice(pos));
                 bw.WriteSupBookInternalRef(sheets.Count);
@@ -167,12 +168,13 @@ public static class XlsxToXlsConverter
                 bw = new BiffWriter(buffer.Slice(pos));
                 bw.WriteExternSheet(sheets.Count);
                 pos += 4 + 2 + sheets.Count * 6;
-                foreach (var dn in definedNames)
-                {
-                    bw = new BiffWriter(buffer.Slice(pos));
-                    bw.WriteNameBuiltin(dn, (ushort)dn.SheetIndex0Based);
-                    pos += 4 + 27;
-                }
+                if (definedNames.Count > 0)
+                    foreach (var dn in definedNames)
+                    {
+                        bw = new BiffWriter(buffer.Slice(pos));
+                        bw.WriteNameBuiltin(dn, (ushort)dn.SheetIndex0Based);
+                        pos += 4 + 27;
+                    }
             }
 
             bw = new BiffWriter(buffer.Slice(pos));
@@ -181,7 +183,7 @@ public static class XlsxToXlsConverter
 
             for (var i = 0; i < sheets.Count; i++)
             {
-                var sz = WriteSheet(tempBuf.AsSpan(), sheets[i], sharedStrings, styles);
+                var sz = WriteSheet(tempBuf.AsSpan(), sheets[i], sharedStrings, styles, i, sheetIndexByName);
                 tempBuf.AsSpan(0, sz).CopyTo(buffer.Slice(pos));
                 pos += sz;
             }
@@ -284,7 +286,7 @@ public static class XlsxToXlsConverter
         return outPos + 4 + dataLen;
     }
 
-    private static int WriteSheet(Span<byte> buffer, SheetData sheet, List<ReadOnlyMemory<char>> sharedStrings, StylesData styles)
+    private static int WriteSheet(Span<byte> buffer, SheetData sheet, List<ReadOnlyMemory<char>> sharedStrings, StylesData styles, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
     {
         var bw = new BiffWriter(buffer);
         bw.WriteBofWorksheet();
@@ -306,6 +308,34 @@ public static class XlsxToXlsConverter
                 var xfIdx = (ushort)styles.GetBiffXfIndex(cell.StyleIndex);
                 switch (cell.Kind)
                 {
+                    case CellKind.Formula:
+                    {
+                        var rgce = CompileFormulaTokens(cell.Formula, sheetIndex, sheetIndexByName);
+                        if (rgce.Length == 0)
+                        {
+                            // Fallback: emit cached value only
+                            WriteCachedValue(bw, cell, xfIdx, sharedStrings);
+                            break;
+                        }
+                        var cachedKind = cell.CachedKind;
+                        var cachedNum = 0d;
+                        var cachedBool = false;
+                        var cachedErr = (byte)0;
+                        var cachedStr = "";
+                        if (cachedKind == CellKind.Number && cell.Value != null &&
+                            double.TryParse(cell.Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var n))
+                            cachedNum = n;
+                        else if (cachedKind == CellKind.Boolean && cell.Value != null)
+                            cachedBool = cell.Value == "1";
+                        else if (cachedKind == CellKind.Error && cell.Value != null)
+                            cachedErr = MapXlsxErrorToBiff(cell.Value);
+                        else if (cachedKind == CellKind.String && cell.Value != null)
+                            cachedStr = cell.Value;
+                        else if (cachedKind == CellKind.SharedString && cell.SstIndex >= 0 && cell.SstIndex < sharedStrings.Count)
+                            cachedStr = sharedStrings[cell.SstIndex].ToString();
+                        bw.WriteFormula(cell.Row, cell.Col, xfIdx, rgce, cachedKind, cachedNum, cachedBool, cachedErr, cachedStr.AsSpan());
+                        break;
+                    }
                     case CellKind.Empty:
                         bw.WriteBlank(cell.Row, cell.Col, xfIdx);
                         break;
@@ -386,10 +416,63 @@ public static class XlsxToXlsConverter
         {
             bw.WriteDatavalidations(sheet.DataValidations.Count);
             foreach (var dv in sheet.DataValidations)
-                bw.WriteDatavalidation(dv);
+            {
+                var f1 = CompileDataValidationFormula(dv, dv.Formula1, sheetIndex, sheetIndexByName);
+                var f2 = CompileFormulaTokens(dv.Formula2, sheetIndex, sheetIndexByName);
+                bw.WriteDatavalidation(dv, f1, f2);
+            }
         }
 
         bw.WriteEof();
         return bw.Position;
+    }
+
+    private static void WriteCachedValue(BiffWriter bw, CellData cell, ushort xfIdx, List<ReadOnlyMemory<char>> sharedStrings)
+    {
+        switch (cell.CachedKind)
+        {
+            case CellKind.Number when cell.Value != null &&
+                double.TryParse(cell.Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var num):
+                bw.WriteNumber(cell.Row, cell.Col, num, xfIdx);
+                return;
+            case CellKind.Boolean when cell.Value != null:
+                bw.WriteBool(cell.Row, cell.Col, cell.Value == "1", xfIdx);
+                return;
+            case CellKind.Error when cell.Value != null:
+                bw.WriteError(cell.Row, cell.Col, MapXlsxErrorToBiff(cell.Value), xfIdx);
+                return;
+            case CellKind.SharedString when cell.SstIndex >= 0 && cell.SstIndex < sharedStrings.Count:
+                bw.WriteLabel(cell.Row, cell.Col, sharedStrings[cell.SstIndex].Span, xfIdx);
+                return;
+            case CellKind.String:
+            default:
+                if (cell.Value != null)
+                    bw.WriteLabel(cell.Row, cell.Col, cell.Value.AsSpan(), xfIdx);
+                else
+                    bw.WriteBlank(cell.Row, cell.Col, xfIdx);
+                return;
+        }
+    }
+
+    private static byte[] CompileFormulaTokens(string? formula, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
+    {
+        if (string.IsNullOrWhiteSpace(formula)) return [];
+        try
+        {
+            return FormulaCompiler.Compile(formula, sheetIndex, sheetIndexByName);
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static byte[] CompileDataValidationFormula(DataValidationInfo dv, string formula, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
+    {
+        if (string.IsNullOrWhiteSpace(formula)) return [];
+        // List type: keep explicit list as ptgStr (tStr)
+        if (dv.Type == 3 && formula.IndexOf(',') >= 0 && !formula.Contains('!') && !formula.Contains(':') && !formula.StartsWith("=", StringComparison.Ordinal))
+            return FormulaCompiler.BuildExplicitListToken(formula);
+        return CompileFormulaTokens(formula, sheetIndex, sheetIndexByName);
     }
 }

@@ -227,6 +227,7 @@ internal static partial class XlsxReader
         var colBreaks = new List<int>();
         var hyperlinks = new List<HyperlinkInfo>();
         var dataValidations = new List<DataValidationInfo>();
+        var sharedFormulas = new Dictionary<int, (int BaseRow, int BaseCol, string Formula)>();
         FreezePaneInfo? freezePane = null;
         PageSetupInfo? pageSetup = null;
         PageMarginsInfo? pageMargins = null;
@@ -330,7 +331,7 @@ internal static partial class XlsxReader
             }
             else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "c" && reader.NamespaceURI == ns && currentRow.HasValue)
             {
-                var cell = ReadCell(reader, ns);
+                var cell = ReadCell(reader, ns, sharedFormulas);
                 if (cell.HasValue)
                     cells.Add(cell.Value);
             }
@@ -542,7 +543,7 @@ internal static partial class XlsxReader
         return v;
     }
 
-    private static CellData? ReadCell(XmlReader reader, string ns)
+    private static CellData? ReadCell(XmlReader reader, string ns, Dictionary<int, (int BaseRow, int BaseCol, string Formula)> sharedFormulas)
     {
         var r = reader.GetAttribute("r");
         var t = reader.GetAttribute("t");
@@ -551,9 +552,12 @@ internal static partial class XlsxReader
 
         var (row, col) = ParseCellRef(r);
         var styleIndex = ParseInt(reader.GetAttribute("s"));
-        if (reader.IsEmptyElement) return new CellData(row, col, CellKind.Empty, null, -1, styleIndex);
+        if (reader.IsEmptyElement) return new CellData(row, col, CellKind.Empty, CellKind.Empty, null, -1, styleIndex, null);
 
         string? value = null;
+        string? formula = null;
+        string? fType = null;
+        var fShared = -1;
         while (reader.Read())
         {
             if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "c") break;
@@ -562,24 +566,153 @@ internal static partial class XlsxReader
                 if (reader.Read() && reader.NodeType == XmlNodeType.Text)
                     value = reader.Value;
             }
+            else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "f" && reader.NamespaceURI == ns)
+            {
+                fType = reader.GetAttribute("t");
+                fShared = ParseInt(reader.GetAttribute("si"));
+                var text = reader.IsEmptyElement ? "" : reader.ReadElementContentAsString();
+                if (!string.IsNullOrEmpty(text))
+                    formula = text;
+            }
             else if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "is" && reader.NamespaceURI == ns)
             {
                 value = ReadInlineStr(reader, ns);
             }
         }
 
-        if (value == null) return new CellData(row, col, CellKind.Empty, null, -1, styleIndex);
-        if (t == "s" && int.TryParse(value, out var idx))
-            return new CellData(row, col, CellKind.SharedString, null, idx, styleIndex);
-        if (t == "str" || t == "inlineStr")
-            return new CellData(row, col, CellKind.String, value, -1, styleIndex);
-        if (t == "b" && (value == "1" || value == "0"))
-            return new CellData(row, col, CellKind.Boolean, value, -1, styleIndex);
-        if (t == "e")
-            return new CellData(row, col, CellKind.Error, value, -1, styleIndex);
-        if (double.TryParse(value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out _))
-            return new CellData(row, col, CellKind.Number, value, -1, styleIndex);
-        return new CellData(row, col, CellKind.String, value, -1, styleIndex);
+        var cachedKind = CellKind.Empty;
+        var sstIndex = -1;
+        if (value != null)
+        {
+            if (t == "s" && int.TryParse(value, out var idx))
+            {
+                cachedKind = CellKind.SharedString;
+                sstIndex = idx;
+                value = null;
+            }
+            else if (t == "str" || t == "inlineStr")
+                cachedKind = CellKind.String;
+            else if (t == "b" && (value == "1" || value == "0"))
+                cachedKind = CellKind.Boolean;
+            else if (t == "e")
+                cachedKind = CellKind.Error;
+            else if (double.TryParse(value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out _))
+                cachedKind = CellKind.Number;
+            else
+                cachedKind = CellKind.String;
+        }
+
+        if (fType == "shared" && fShared >= 0)
+        {
+            if (formula != null)
+                sharedFormulas[fShared] = (row, col, formula);
+            else if (sharedFormulas.TryGetValue(fShared, out var def))
+                formula = ExpandSharedFormula(def.Formula, def.BaseRow, def.BaseCol, row, col);
+        }
+
+        if (formula != null)
+            return new CellData(row, col, CellKind.Formula, cachedKind, value, sstIndex, styleIndex, formula);
+
+        if (value == null && sstIndex < 0)
+            return new CellData(row, col, CellKind.Empty, CellKind.Empty, null, -1, styleIndex, null);
+        if (sstIndex >= 0)
+            return new CellData(row, col, CellKind.SharedString, CellKind.SharedString, null, sstIndex, styleIndex, null);
+        if (cachedKind == CellKind.Boolean)
+            return new CellData(row, col, CellKind.Boolean, CellKind.Boolean, value, -1, styleIndex, null);
+        if (cachedKind == CellKind.Error)
+            return new CellData(row, col, CellKind.Error, CellKind.Error, value, -1, styleIndex, null);
+        if (cachedKind == CellKind.Number)
+            return new CellData(row, col, CellKind.Number, CellKind.Number, value, -1, styleIndex, null);
+        return new CellData(row, col, CellKind.String, CellKind.String, value, -1, styleIndex, null);
+    }
+
+    private static string ExpandSharedFormula(string baseFormula, int baseRow, int baseCol, int targetRow, int targetCol)
+    {
+        var dr = targetRow - baseRow;
+        var dc = targetCol - baseCol;
+        if (dr == 0 && dc == 0) return baseFormula;
+        return ShiftA1References(baseFormula, dr, dc);
+    }
+
+    private static string ShiftA1References(string formula, int dr, int dc)
+    {
+        if (string.IsNullOrEmpty(formula) || (dr == 0 && dc == 0)) return formula;
+        var sb = new System.Text.StringBuilder(formula.Length + 8);
+        var inString = false;
+        for (var i = 0; i < formula.Length; i++)
+        {
+            var ch = formula[i];
+            if (ch == '"')
+            {
+                inString = !inString;
+                sb.Append(ch);
+                continue;
+            }
+            if (inString)
+            {
+                sb.Append(ch);
+                continue;
+            }
+
+            var j = i;
+            var absCol = false;
+            var absRow = false;
+            if (j < formula.Length && formula[j] == '$') { absCol = true; j++; }
+            var colStart = j;
+            while (j < formula.Length && char.IsLetter(formula[j])) j++;
+            var hasCol = j > colStart;
+            if (!hasCol) { sb.Append(ch); continue; }
+            var colText = formula.AsSpan(colStart, j - colStart);
+            if (j < formula.Length && formula[j] == '$') { absRow = true; j++; }
+            var rowStart = j;
+            while (j < formula.Length && char.IsDigit(formula[j])) j++;
+            var hasRow = j > rowStart;
+            if (!hasRow) { sb.Append(ch); continue; }
+
+            var prev = i > 0 ? formula[i - 1] : '\0';
+            if (char.IsLetterOrDigit(prev) || prev == '_' || prev == '.')
+            {
+                sb.Append(ch);
+                continue;
+            }
+
+            if (!int.TryParse(formula.AsSpan(rowStart, j - rowStart), out var row1))
+            {
+                sb.Append(ch);
+                continue;
+            }
+            var col1 = ParseColRef(colText);
+            if (col1 < 0) { sb.Append(ch); continue; }
+            var newCol = absCol ? col1 : col1 + dc;
+            var newRow = absRow ? (row1 - 1) : (row1 - 1) + dr;
+            if (newCol < 0) newCol = 0;
+            if (newCol > 255) newCol = 255;
+            if (newRow < 0) newRow = 0;
+            if (newRow > 65535) newRow = 65535;
+
+            if (absCol) sb.Append('$');
+            sb.Append(ColToA1(newCol));
+            if (absRow) sb.Append('$');
+            sb.Append(newRow + 1);
+            i = j - 1;
+        }
+        return sb.ToString();
+    }
+
+    private static string ColToA1(int col)
+    {
+        col += 1;
+        Span<char> tmp = stackalloc char[4];
+        var len = 0;
+        while (col > 0)
+        {
+            var rem = (col - 1) % 26;
+            tmp[len++] = (char)('A' + rem);
+            col = (col - 1) / 26;
+        }
+        for (var i = 0; i < len / 2; i++)
+            (tmp[i], tmp[len - 1 - i]) = (tmp[len - 1 - i], tmp[i]);
+        return new string(tmp[..len]);
     }
 
     private static string ReadInlineStr(XmlReader reader, string ns)
@@ -669,5 +802,5 @@ internal record struct PageMarginsInfo(double Left, double Right, double Top, do
 internal record struct ColInfo(int FirstCol, int LastCol, double Width, bool Hidden);
 internal record struct MergeRange(int FirstRow, int FirstCol, int LastRow, int LastCol);
 internal record struct RowData(int RowIndex, CellData[] Cells, double Height, bool Hidden);
-internal record struct CellData(int Row, int Col, CellKind Kind, string? Value, int SstIndex, int StyleIndex);
-internal enum CellKind { Empty, Number, String, SharedString, Boolean, Error }
+internal record struct CellData(int Row, int Col, CellKind Kind, CellKind CachedKind, string? Value, int SstIndex, int StyleIndex, string? Formula);
+internal enum CellKind { Empty, Number, String, SharedString, Boolean, Error, Formula }

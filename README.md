@@ -58,6 +58,7 @@ XlsxToXlsConverter.ConvertFile("input.xlsx", "output.xls");
 | Booleans | `t="b"` | BOOLERR (boolean) |
 | Errors | `t="e"` (#DIV/0!, #N/A, etc.) | BOOLERR (error), mapped to BIFF codes |
 | Unicode | UTF-8 in XLSX | 16-bit in LABEL / SST |
+| Formulas (basic) | `<f>` (formula) + cached `<v>` | FORMULA (+ STRING record for string results); limited parser (refs/areas, basic operators, a few functions) |
 
 ### Cell formatting (from `xl/styles.xml`)
 
@@ -106,8 +107,8 @@ XlsxToXlsConverter.ConvertFile("input.xlsx", "output.xls");
 
 ## Not supported (current limitations)
 
-- **Formulas** — only cached values are converted; formula expressions are not written as FORMULA records.
-- **Data validation** — List type with explicit list (e.g. `formula1="A,B,C"`) is supported; types that need formula RPN (references, custom formulas) are written with metadata only, no condition formulas.
+- **Formulas (advanced)** — only a subset of Excel formulas is compiled (no full Excel function set; shared formula edge cases may be imperfect).
+- **Data validation (advanced)** — explicit list and simple formulas/ranges are supported; complex formulas/functions and edge cases may not compile.
 - **Conditional formatting** — not implemented.
 - **Charts, images, drawings** — not implemented.
 - **Threaded comments** — only legacy comments (commentsN.xml) are read.

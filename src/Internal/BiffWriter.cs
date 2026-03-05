@@ -8,6 +8,7 @@ namespace Nedev.XlsxToXls.Internal;
 /// </summary>
 internal ref struct BiffWriter
 {
+    private const int BiffMaxRecordData = 8224;
     private Span<byte> _buffer;
     private int _position;
 
@@ -600,6 +601,78 @@ internal ref struct BiffWriter
         _position += 8;
     }
 
+    public void WriteFormula(int row, int col, ushort xfIndex, ReadOnlySpan<byte> rgce, CellKind cachedKind, double cachedNumber, bool cachedBool, byte cachedError, ReadOnlySpan<char> cachedString)
+    {
+        var recLen = 22 + rgce.Length;
+        WriteRecordHeader(0x0006, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)row);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)col);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), xfIndex);
+        _position += 2;
+
+        // FormulaValue (8 bytes)
+        if (cachedKind == CellKind.Number)
+        {
+            BinaryPrimitives.WriteDoubleLittleEndian(_buffer.Slice(_position), cachedNumber);
+        }
+        else
+        {
+            _buffer.Slice(_position, 8).Clear();
+            _buffer[_position] = cachedKind switch
+            {
+                CellKind.String or CellKind.SharedString => (byte)0x00,
+                CellKind.Boolean => (byte)0x01,
+                CellKind.Error => (byte)0x02,
+                _ => (byte)0x03
+            };
+            if (cachedKind == CellKind.Boolean)
+                _buffer[_position + 2] = (byte)(cachedBool ? 1 : 0);
+            else if (cachedKind == CellKind.Error)
+                _buffer[_position + 2] = cachedError;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + 6), 0xFFFF);
+        }
+        _position += 8;
+
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0);
+        _position += 4;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)rgce.Length);
+        _position += 2;
+        rgce.CopyTo(_buffer.Slice(_position));
+        _position += rgce.Length;
+
+        if (cachedKind is CellKind.String or CellKind.SharedString)
+            WriteString(cachedString);
+    }
+
+    public void WriteString(ReadOnlySpan<char> text)
+    {
+        if (text.Length > 32767) text = text[..32767];
+        var need16 = HasHighChar(text);
+        var maxChars = need16 ? (BiffMaxRecordData - 3) / 2 : (BiffMaxRecordData - 3);
+        if (text.Length > maxChars) text = text[..maxChars];
+        var recLen = 3 + (need16 ? text.Length * 2 : text.Length);
+        WriteRecordHeader(0x0207, recLen);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)text.Length);
+        _position += 2;
+        _buffer[_position++] = (byte)(need16 ? 1 : 0);
+        if (need16)
+        {
+            for (var i = 0; i < text.Length; i++)
+                BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position + i * 2), text[i]);
+            _position += text.Length * 2;
+        }
+        else
+        {
+            for (var i = 0; i < text.Length; i++)
+                _buffer[_position + i] = (byte)text[i];
+            _position += text.Length;
+        }
+    }
+
     public void WriteLabel(int row, int col, ReadOnlySpan<char> text, ushort xfIndex = 15)
     {
         var needs16Bit = false;
@@ -662,10 +735,8 @@ internal ref struct BiffWriter
         _position += 4;
     }
 
-    public void WriteDatavalidation(DataValidationInfo dv)
+    public void WriteDatavalidation(DataValidationInfo dv, ReadOnlySpan<byte> f1, ReadOnlySpan<byte> f2)
     {
-        var f1 = BuildListFormula1(dv.Type, dv.Formula1);
-        var f2 = BuildListFormula1(0, dv.Formula2);
         var lenPromptTitle = 2 + 1 + (HasHighChar(dv.PromptTitle) ? dv.PromptTitle.Length * 2 : dv.PromptTitle.Length);
         var lenErrorTitle = 2 + 1 + (HasHighChar(dv.ErrorTitle) ? dv.ErrorTitle.Length * 2 : dv.ErrorTitle.Length);
         var lenPromptText = 2 + 1 + (HasHighChar(dv.PromptText) ? dv.PromptText.Length * 2 : dv.PromptText.Length);
@@ -707,32 +778,6 @@ internal ref struct BiffWriter
     {
         foreach (var c in s) if (c > 255) return true;
         return false;
-    }
-
-    private static byte[] BuildListFormula1(int type, string formula1)
-    {
-        if (type != 3 || string.IsNullOrEmpty(formula1)) return [];
-        var items = formula1.Split(',');
-        var sb = new System.Text.StringBuilder();
-        for (var i = 0; i < items.Length; i++)
-        {
-            if (i > 0) sb.Append('\0');
-            sb.Append(items[i].Trim());
-        }
-        var s = sb.ToString();
-        if (s.Length > 255) return [];
-        var need16 = HasHighChar(s.AsSpan());
-        var list = new List<byte> { 0x17, (byte)(need16 ? 1 : 0), (byte)s.Length };
-        if (need16)
-            foreach (var c in s)
-            {
-                list.Add((byte)(c & 0xFF));
-                list.Add((byte)((c >> 8) & 0xFF));
-            }
-        else
-            foreach (var c in s)
-                list.Add((byte)c);
-        return list.ToArray();
     }
 
     private void WriteBiff8UnicodeString16(ReadOnlySpan<char> s)
