@@ -33,7 +33,14 @@ public static class XlsxToXlsConverter
     /// </summary>
     /// <param name="xlsxStream">Input XLSX stream (readable, seekable recommended)</param>
     /// <param name="xlsStream">Output XLS stream (writable)</param>
-    public static void Convert(Stream xlsxStream, Stream xlsStream)
+    /// <summary>
+    /// Converts XLSX stream to XLS format and writes to output stream.
+    /// </summary>
+    /// <param name="xlsxStream">Input XLSX stream.</param>
+    /// <param name="xlsStream">Output XLS stream.</param>
+    /// <param name="log">Optional logging callback. Messages are produced when formulas or other
+    /// features fail to compile.</param>
+    public static void Convert(Stream xlsxStream, Stream xlsStream, Action<string>? log = null)
     {
         var (sharedStrings, sheets, styles, definedNames) = XlsxReader.Read(xlsxStream);
         var stylesData = styles ?? CreateDefaultStyles();
@@ -41,7 +48,7 @@ public static class XlsxToXlsConverter
         var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(biffSize, 256 * 1024));
         try
         {
-            var written = WriteBiff(buffer.AsSpan(), sharedStrings, sheets, stylesData, definedNames);
+            var written = WriteBiff(buffer.AsSpan(), sharedStrings, sheets, stylesData, definedNames, log);
             var ole = new OleCompoundWriter("Workbook");
             ole.WriteStream(buffer.AsSpan(0, written));
             ole.WriteTo(xlsStream);
@@ -60,6 +67,14 @@ public static class XlsxToXlsConverter
         using var xlsx = File.OpenRead(xlsxPath);
         using var xls = File.Create(xlsPath);
         Convert(xlsx, xls);
+    }
+
+    // overload that accepts logging callback
+    public static void ConvertFile(string xlsxPath, string xlsPath, Action<string> log)
+    {
+        using var xlsx = File.OpenRead(xlsxPath);
+        using var xls = File.Create(xlsPath);
+        Convert(xlsx, xls, log);
     }
 
     private static StylesData CreateDefaultStyles()
@@ -110,7 +125,7 @@ public static class XlsxToXlsConverter
         return Math.Max(n, 256 * 1024);
     }
 
-    private static int WriteBiff(Span<byte> buffer, List<ReadOnlyMemory<char>> sharedStrings, List<SheetData> sheets, StylesData styles, List<DefinedNameInfo> definedNames)
+    private static int WriteBiff(Span<byte> buffer, List<ReadOnlyMemory<char>> sharedStrings, List<SheetData> sheets, StylesData styles, List<DefinedNameInfo> definedNames, Action<string>? log)
     {
         var pos = 0;
         var bw = new BiffWriter(buffer);
@@ -160,7 +175,7 @@ public static class XlsxToXlsConverter
         {
             for (var i = 0; i < sheets.Count; i++)
             {
-                var sz = WriteSheet(tempBuf.AsSpan(), sheets[i], sharedStrings, styles, i, sheetIndexByName);
+                var sz = WriteSheet(tempBuf.AsSpan(), sheets[i], sharedStrings, styles, i, sheetIndexByName, log);
                 sheetSizes.Add(sz);
             }
 
@@ -210,7 +225,7 @@ public static class XlsxToXlsConverter
 
             for (var i = 0; i < sheets.Count; i++)
             {
-                var sz = WriteSheet(tempBuf.AsSpan(), sheets[i], sharedStrings, styles, i, sheetIndexByName);
+                var sz = WriteSheet(tempBuf.AsSpan(), sheets[i], sharedStrings, styles, i, sheetIndexByName, log);
                 tempBuf.AsSpan(0, sz).CopyTo(buffer.Slice(pos));
                 pos += sz;
             }
@@ -313,7 +328,7 @@ public static class XlsxToXlsConverter
         return outPos + 4 + dataLen;
     }
 
-    private static int WriteSheet(Span<byte> buffer, SheetData sheet, List<ReadOnlyMemory<char>> sharedStrings, StylesData styles, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
+    internal static int WriteSheet(Span<byte> buffer, SheetData sheet, List<ReadOnlyMemory<char>> sharedStrings, StylesData styles, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName, Action<string>? log)
     {
         var bw = new BiffWriter(buffer);
         bw.WriteBofWorksheet();
@@ -337,7 +352,16 @@ public static class XlsxToXlsConverter
                 {
                     case CellKind.Formula:
                     {
-                        var rgce = CompileFormulaTokens(cell.Formula, sheetIndex, sheetIndexByName);
+                        byte[] rgce;
+                        try
+                        {
+                            rgce = CompileFormulaTokens(cell.Formula, sheetIndex, sheetIndexByName);
+                        }
+                        catch (Exception ex)
+                        {
+                            log?.Invoke($"Formula compilation failed at sheet {sheetIndex}, cell {cell.Row + 1},{cell.Col + 1}: {ex.Message}");
+                            rgce = Array.Empty<byte>();
+                        }
                         if (rgce.Length == 0)
                         {
                             // Fallback: emit cached value only
@@ -499,17 +523,11 @@ public static class XlsxToXlsConverter
         }
     }
 
-    private static byte[] CompileFormulaTokens(string? formula, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
+    internal static byte[] CompileFormulaTokens(string? formula, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
     {
-        if (string.IsNullOrWhiteSpace(formula)) return [];
-        try
-        {
-            return FormulaCompiler.Compile(formula, sheetIndex, sheetIndexByName);
-        }
-        catch
-        {
-            return [];
-        }
+        if (string.IsNullOrWhiteSpace(formula)) return Array.Empty<byte>();
+        // any exceptions are allowed to bubble so callers/consumers can react or log
+        return FormulaCompiler.Compile(formula, sheetIndex, sheetIndexByName);
     }
 
     private static byte[] CompileDataValidationFormula(DataValidationInfo dv, string formula, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
