@@ -118,6 +118,11 @@ public readonly record struct ChartColor(byte R, byte G, byte B)
     public static readonly ChartColor Gray = new(128, 128, 128);
     public static readonly ChartColor Orange = new(255, 165, 0);
     public static readonly ChartColor Purple = new(128, 0, 128);
+
+    // 深色变体
+    public static readonly ChartColor DarkRed = new(139, 0, 0);
+    public static readonly ChartColor DarkGreen = new(0, 100, 0);
+    public static readonly ChartColor DarkBlue = new(0, 0, 139);
 }
 
 public sealed class ChartRange

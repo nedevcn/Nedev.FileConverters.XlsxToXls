@@ -580,5 +580,346 @@ namespace Nedev.FileConverters.XlsxToXls.Tests
 
             Assert.Equal("", title.Text);
         }
+
+        // 新增测试：验证 ChartWriter 写入数据标签
+        [Fact]
+        public void ChartWriter_WritesDataLabels()
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 8192);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "ChartWithLabels",
+                    Type = ChartType.Column,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "Series1",
+                            SeriesIndex = 0,
+                            DataLabels = new DataLabels
+                            {
+                                Show = true,
+                                ShowValue = true,
+                                ShowPercentage = true,
+                                Position = DataLabelPosition.InsideEnd
+                            }
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：验证 ChartWriter 写入系列样式
+        [Fact]
+        public void ChartWriter_WritesSeriesStyle()
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 8192);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "StyledChart",
+                    Type = ChartType.Line,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "StyledSeries",
+                            SeriesIndex = 0,
+                            LineStyle = LineStyle.Dash,
+                            MarkerStyle = MarkerStyle.Diamond,
+                            FillColor = ChartColor.Red,
+                            BorderColor = ChartColor.Black
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：验证 ChartWriter 写入系列颜色
+        [Theory]
+        [InlineData(255, 0, 0)]    // Red
+        [InlineData(0, 255, 0)]    // Green
+        [InlineData(0, 0, 255)]    // Blue
+        [InlineData(255, 255, 0)]  // Yellow
+        [InlineData(128, 64, 32)]  // Custom
+        public void ChartWriter_WritesSeriesColor(byte r, byte g, byte b)
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 8192);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "ColoredChart",
+                    Type = ChartType.Column,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "ColoredSeries",
+                            SeriesIndex = 0,
+                            FillColor = new ChartColor(r, g, b)
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：验证所有线条样式
+        [Theory]
+        [InlineData(LineStyle.Solid)]
+        [InlineData(LineStyle.Dash)]
+        [InlineData(LineStyle.Dot)]
+        [InlineData(LineStyle.DashDot)]
+        [InlineData(LineStyle.DashDotDot)]
+        [InlineData(LineStyle.None)]
+        public void ChartWriter_WritesAllLineStyles(LineStyle style)
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 8192);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "LineStyleChart",
+                    Type = ChartType.Line,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "LineSeries",
+                            SeriesIndex = 0,
+                            LineStyle = style
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：验证所有标记样式
+        [Theory]
+        [InlineData(MarkerStyle.None)]
+        [InlineData(MarkerStyle.Square)]
+        [InlineData(MarkerStyle.Diamond)]
+        [InlineData(MarkerStyle.Triangle)]
+        [InlineData(MarkerStyle.X)]
+        [InlineData(MarkerStyle.Star)]
+        [InlineData(MarkerStyle.Dot)]
+        [InlineData(MarkerStyle.Circle)]
+        [InlineData(MarkerStyle.Plus)]
+        public void ChartWriter_WritesAllMarkerStyles(MarkerStyle style)
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 8192);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "MarkerStyleChart",
+                    Type = ChartType.Line,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "MarkerSeries",
+                            SeriesIndex = 0,
+                            MarkerStyle = style
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：验证所有数据标签位置
+        [Theory]
+        [InlineData(DataLabelPosition.Center)]
+        [InlineData(DataLabelPosition.InsideEnd)]
+        [InlineData(DataLabelPosition.OutsideEnd)]
+        [InlineData(DataLabelPosition.BestFit)]
+        [InlineData(DataLabelPosition.Left)]
+        [InlineData(DataLabelPosition.Right)]
+        [InlineData(DataLabelPosition.Above)]
+        [InlineData(DataLabelPosition.Below)]
+        public void ChartWriter_WritesAllDataLabelPositions(DataLabelPosition position)
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 8192);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "LabelPositionChart",
+                    Type = ChartType.Column,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "LabelSeries",
+                            SeriesIndex = 0,
+                            DataLabels = new DataLabels
+                            {
+                                Show = true,
+                                ShowValue = true,
+                                Position = position
+                            }
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：复杂图表 - 多系列带完整样式
+        [Fact]
+        public void ChartWriter_ComplexMultiSeriesChart()
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 16384);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "ComplexMultiSeries",
+                    Type = ChartType.Line,
+                    Title = new ChartTitle { Text = "Sales Performance" },
+                    Legend = new ChartLegend { Show = true, Position = LegendPosition.Bottom },
+                    CategoryAxis = new ChartAxis
+                    {
+                        Type = AxisType.Category,
+                        Position = AxisPosition.Bottom,
+                        Title = "Months",
+                        HasMajorGridlines = false
+                    },
+                    ValueAxis = new ChartAxis
+                    {
+                        Type = AxisType.Value,
+                        Position = AxisPosition.Left,
+                        Title = "Revenue ($)",
+                        MinValue = 0,
+                        MaxValue = 100000,
+                        HasMajorGridlines = true
+                    },
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "Product A",
+                            SeriesIndex = 0,
+                            FillColor = ChartColor.Blue,
+                            BorderColor = ChartColor.DarkBlue,
+                            LineStyle = LineStyle.Solid,
+                            MarkerStyle = MarkerStyle.Circle,
+                            DataLabels = new DataLabels
+                            {
+                                Show = true,
+                                ShowValue = true,
+                                Position = DataLabelPosition.Above
+                            }
+                        },
+                        new()
+                        {
+                            Name = "Product B",
+                            SeriesIndex = 1,
+                            FillColor = ChartColor.Green,
+                            BorderColor = ChartColor.DarkGreen,
+                            LineStyle = LineStyle.Dash,
+                            MarkerStyle = MarkerStyle.Square,
+                            DataLabels = new DataLabels
+                            {
+                                Show = true,
+                                ShowValue = true,
+                                Position = DataLabelPosition.Below
+                            }
+                        },
+                        new()
+                        {
+                            Name = "Product C",
+                            SeriesIndex = 2,
+                            FillColor = ChartColor.Red,
+                            BorderColor = ChartColor.DarkRed,
+                            LineStyle = LineStyle.Dot,
+                            MarkerStyle = MarkerStyle.Diamond,
+                            DataLabels = new DataLabels
+                            {
+                                Show = true,
+                                ShowPercentage = true,
+                                Position = DataLabelPosition.Center
+                            }
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 100); // 确保写入了足够多的数据
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：ChartColor 相等性和哈希码
+        [Fact]
+        public void ChartColor_Equality()
+        {
+            var color1 = new ChartColor(255, 128, 64);
+            var color2 = new ChartColor(255, 128, 64);
+            var color3 = new ChartColor(255, 128, 65);
+
+            Assert.Equal(color1, color2);
+            Assert.True(color1 == color2);
+            Assert.False(color1 == color3);
+            Assert.Equal(color1.GetHashCode(), color2.GetHashCode());
+        }
+
+        // 新增测试：ChartColor ToString
+        [Fact]
+        public void ChartColor_ToString()
+        {
+            var color = new ChartColor(255, 128, 64);
+            var str = color.ToString();
+            Assert.Contains("255", str);
+            Assert.Contains("128", str);
+            Assert.Contains("64", str);
+        }
     }
 }

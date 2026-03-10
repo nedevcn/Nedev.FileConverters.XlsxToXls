@@ -219,8 +219,146 @@ internal ref struct ChartWriter
             WriteValueRange(series.Values);
         }
 
+        // 数据标签
+        if (series.DataLabels?.Show == true)
+        {
+            WriteDataLabels(series.DataLabels);
+        }
+
+        // 系列样式（线条、标记）
+        if (series.LineStyle.HasValue || series.MarkerStyle != MarkerStyle.None)
+        {
+            WriteSeriesStyle(series);
+        }
+
+        // 系列颜色
+        if (series.FillColor.HasValue)
+        {
+            WriteSeriesColor(series.FillColor.Value);
+        }
+
         // 系列结束标记
         WriteRecordHeader(0x1004, 0);
+    }
+
+    private void WriteDataLabels(DataLabels labels)
+    {
+        // DATALABELS记录 (0x1025)
+        WriteRecordHeader(0x1025, 8);
+
+        // 标志位
+        var flags = 0u;
+        if (labels.Show) flags |= 0x0001;
+        if (labels.ShowValue) flags |= 0x0002;
+        if (labels.ShowCategory) flags |= 0x0004;
+        if (labels.ShowPercentage) flags |= 0x0008;
+        if (labels.ShowSeriesName) flags |= 0x0010;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), flags);
+        _position += 4;
+
+        // 位置
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)labels.Position);
+        _position += 2;
+
+        // 分隔符（0 = 自动）
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+    }
+
+    private void WriteSeriesStyle(ChartSeries series)
+    {
+        // LINEFORMAT记录 (0x100E) - 线条样式
+        if (series.LineStyle.HasValue)
+        {
+            WriteRecordHeader(0x100E, 12);
+
+            // 线条样式
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)series.LineStyle.Value);
+            _position += 2;
+
+            // 线条宽度（以1/20点为单位）
+            var width = series.LineStyle == LineStyle.None ? 0 : 25;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)width);
+            _position += 2;
+
+            // 标志位
+            var flags = 0u;
+            if (series.BorderColor.HasValue) flags |= 0x0001; // 使用自定义颜色
+            BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), flags);
+            _position += 4;
+
+            // 颜色索引（如果使用调色板）
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+
+            // 预留
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+        }
+
+        // MARKERFORMAT记录 (0x100F) - 标记样式
+        if (series.MarkerStyle != MarkerStyle.None)
+        {
+            WriteRecordHeader(0x100F, 16);
+
+            // 标记样式
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)series.MarkerStyle);
+            _position += 2;
+
+            // 标记大小（以1/20点为单位）
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 60);
+            _position += 2;
+
+            // 标志位
+            var flags = 0u;
+            if (series.FillColor.HasValue) flags |= 0x0001;
+            if (series.BorderColor.HasValue) flags |= 0x0002;
+            BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), flags);
+            _position += 4;
+
+            // 填充颜色索引
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+
+            // 边框颜色索引
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+
+            // 预留
+            BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0);
+            _position += 4;
+        }
+    }
+
+    private void WriteSeriesColor(ChartColor color)
+    {
+        // AREAFORMAT记录 (0x100A) - 填充颜色
+        WriteRecordHeader(0x100A, 16);
+
+        // 颜色（RGB）
+        var rgb = (uint)((color.R << 16) | (color.G << 8) | color.B);
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), rgb);
+        _position += 4;
+
+        // 背景颜色（透明）
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0xFFFFFFFF);
+        _position += 4;
+
+        // 图案（0 = 实心）
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+
+        // 标志位
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0001);
+        _position += 2;
+
+        // 颜色索引
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+        _position += 2;
+
+        // 背景颜色索引
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0xFFFF);
+        _position += 2;
     }
 
     private void WriteSeriesName(string name)

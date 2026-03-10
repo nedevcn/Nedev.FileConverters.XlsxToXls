@@ -279,11 +279,202 @@ internal static class ChartReader
                         series.Values = ReadChartReference(reader, ns);
                         depth--;
                         break;
+                    case "dLbls":
+                        series.DataLabels = ReadDataLabels(reader, ns);
+                        depth--;
+                        break;
+                    case "spPr":
+                        ReadSeriesStyle(reader, ns, series);
+                        depth--;
+                        break;
                 }
             }
             else if (reader.NodeType == XmlNodeType.EndElement) depth--;
         }
         return series;
+    }
+
+    private static DataLabels? ReadDataLabels(XmlReader reader, string ns)
+    {
+        var labels = new DataLabels();
+        if (reader.IsEmptyElement) return labels;
+
+        // 检查是否有 showVal 属性
+        var showVal = reader.GetAttribute("showVal");
+        if (showVal != null) labels.ShowValue = showVal == "1";
+
+        // 检查是否有 showCatName 属性
+        var showCatName = reader.GetAttribute("showCatName");
+        if (showCatName != null) labels.ShowCategory = showCatName == "1";
+
+        // 检查是否有 showPercent 属性
+        var showPercent = reader.GetAttribute("showPercent");
+        if (showPercent != null) labels.ShowPercentage = showPercent == "1";
+
+        // 检查是否有 showSerName 属性
+        var showSerName = reader.GetAttribute("showSerName");
+        if (showSerName != null) labels.ShowSeriesName = showSerName == "1";
+
+        var depth = 1;
+        while (reader.Read() && depth > 0)
+        {
+            if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == ns)
+            {
+                switch (reader.LocalName)
+                {
+                    case "dLblPos":
+                        var val = reader.GetAttribute("val");
+                        labels.Position = val switch
+                        {
+                            "ctr" => DataLabelPosition.Center,
+                            "inEnd" => DataLabelPosition.InsideEnd,
+                            "outEnd" => DataLabelPosition.OutsideEnd,
+                            "bestFit" => DataLabelPosition.BestFit,
+                            "l" => DataLabelPosition.Left,
+                            "r" => DataLabelPosition.Right,
+                            "t" => DataLabelPosition.Above,
+                            "b" => DataLabelPosition.Below,
+                            _ => DataLabelPosition.OutsideEnd
+                        };
+                        break;
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement) depth--;
+        }
+        return labels;
+    }
+
+    private static void ReadSeriesStyle(XmlReader reader, string ns, ChartSeries series)
+    {
+        if (reader.IsEmptyElement) return;
+
+        var aNs = "http://schemas.openxmlformats.org/drawingml/2006/main";
+        var depth = 1;
+        while (reader.Read() && depth > 0)
+        {
+            if (reader.NodeType == XmlNodeType.Element)
+            {
+                if (reader.LocalName == "solidFill" && reader.NamespaceURI == aNs)
+                {
+                    // 读取填充颜色
+                    var color = ReadColor(reader, aNs);
+                    if (color.HasValue) series.FillColor = color.Value;
+                }
+                else if (reader.LocalName == "ln" && reader.NamespaceURI == aNs)
+                {
+                    // 读取线条样式
+                    ReadLineStyle(reader, aNs, series);
+                }
+                else if (reader.LocalName == "marker" && reader.NamespaceURI == ns)
+                {
+                    // 读取标记样式
+                    ReadMarkerStyle(reader, ns, series);
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement) depth--;
+        }
+    }
+
+    private static ChartColor? ReadColor(XmlReader reader, string ns)
+    {
+        if (reader.IsEmptyElement) return null;
+
+        var depth = 1;
+        while (reader.Read() && depth > 0)
+        {
+            if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == ns)
+            {
+                if (reader.LocalName == "srgbClr")
+                {
+                    var val = reader.GetAttribute("val");
+                    if (!string.IsNullOrEmpty(val) && val.Length >= 6)
+                    {
+                        if (byte.TryParse(val[..2], System.Globalization.NumberStyles.HexNumber, null, out var r) &&
+                            byte.TryParse(val.Substring(2, 2), System.Globalization.NumberStyles.HexNumber, null, out var g) &&
+                            byte.TryParse(val.Substring(4, 2), System.Globalization.NumberStyles.HexNumber, null, out var b))
+                        {
+                            return new ChartColor(r, g, b);
+                        }
+                    }
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement) depth--;
+        }
+        return null;
+    }
+
+    private static void ReadLineStyle(XmlReader reader, string ns, ChartSeries series)
+    {
+        if (reader.IsEmptyElement) return;
+
+        var width = reader.GetAttribute("w");
+        if (width != null && int.TryParse(width, out var w))
+        {
+            // width 是以 EMU 为单位，转换为线条样式
+            series.LineStyle = w > 0 ? LineStyle.Solid : LineStyle.None;
+        }
+
+        var depth = 1;
+        while (reader.Read() && depth > 0)
+        {
+            if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == ns)
+            {
+                if (reader.LocalName == "solidFill")
+                {
+                    var color = ReadColor(reader, ns);
+                    if (color.HasValue) series.BorderColor = color.Value;
+                }
+                else if (reader.LocalName == "noFill")
+                {
+                    series.LineStyle = LineStyle.None;
+                }
+                else if (reader.LocalName == "prstDash")
+                {
+                    var val = reader.GetAttribute("val");
+                    series.LineStyle = val switch
+                    {
+                        "solid" => LineStyle.Solid,
+                        "dash" => LineStyle.Dash,
+                        "dot" => LineStyle.Dot,
+                        "dashDot" => LineStyle.DashDot,
+                        "lgDash" => LineStyle.Dash,
+                        _ => LineStyle.Solid
+                    };
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement) depth--;
+        }
+    }
+
+    private static void ReadMarkerStyle(XmlReader reader, string ns, ChartSeries series)
+    {
+        if (reader.IsEmptyElement) return;
+
+        var depth = 1;
+        while (reader.Read() && depth > 0)
+        {
+            if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == ns)
+            {
+                if (reader.LocalName == "symbol")
+                {
+                    var val = reader.GetAttribute("val");
+                    series.MarkerStyle = val switch
+                    {
+                        "square" => MarkerStyle.Square,
+                        "diamond" => MarkerStyle.Diamond,
+                        "triangle" => MarkerStyle.Triangle,
+                        "x" => MarkerStyle.X,
+                        "star" => MarkerStyle.Star,
+                        "dot" => MarkerStyle.Dot,
+                        "circle" => MarkerStyle.Circle,
+                        "plus" => MarkerStyle.Plus,
+                        "none" => MarkerStyle.None,
+                        _ => MarkerStyle.None
+                    };
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement) depth--;
+        }
     }
 
     private static string? ReadSeriesText(XmlReader reader, string ns)
