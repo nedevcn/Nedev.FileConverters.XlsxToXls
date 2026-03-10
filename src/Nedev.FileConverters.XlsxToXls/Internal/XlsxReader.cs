@@ -98,7 +98,8 @@ internal static partial class XlsxReader
             if (!rels.TryGetValue(rId, out var path)) continue;
             var (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, printOptions, headerFooter, hyperlinks, dataValidations, conditionalFormats) = ReadWorksheet(archive, path);
             var comments = ReadSheetComments(archive, path);
-            list.Add(new SheetData(name, rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, printOptions, headerFooter, hyperlinks, comments, dataValidations, conditionalFormats, sheetId.Visibility));
+            var charts = ChartReader.ReadCharts(archive, path);
+            list.Add(new SheetData(name, rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, printOptions, headerFooter, hyperlinks, comments, dataValidations, conditionalFormats, sheetId.Visibility, charts));
         }
         return (list, definedNames);
     }
@@ -912,7 +913,8 @@ internal record struct SheetData(
     List<CommentInfo> Comments,
     List<DataValidationInfo> DataValidations,
     List<ConditionalFormatInfo> ConditionalFormats,
-    byte Visibility);
+    byte Visibility,
+    List<ChartData> Charts);
 
 internal record struct DataValidationInfo(
     List<(int FirstRow, int FirstCol, int LastRow, int LastCol)> Ranges,

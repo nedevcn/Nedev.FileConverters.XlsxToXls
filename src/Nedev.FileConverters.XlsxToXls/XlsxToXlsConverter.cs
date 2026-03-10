@@ -113,6 +113,13 @@ public static class XlsxToXlsConverter
             }
             foreach (var dv in sheet.DataValidations)
                 n += 30 + dv.Ranges.Count * 8 + (dv.PromptTitle.Length + dv.ErrorTitle.Length + dv.PromptText.Length + dv.ErrorText.Length) * 2 + dv.Formula1.Length + dv.Formula2.Length;
+            // 图表大小估算
+            foreach (var chart in sheet.Charts)
+            {
+                n += 1024 + chart.Series.Count * 256;
+                if (!string.IsNullOrEmpty(chart.Title?.Text))
+                    n += 64 + chart.Title.Text.Length * 2;
+            }
         }
         if (sheets.Count > 0)
             n += 8 + (4 + 2 + sheets.Count * 6) + (definedNames.Count > 0 ? definedNames.Count * (4 + 27) : 0);
@@ -478,6 +485,23 @@ public static class XlsxToXlsConverter
             if (!string.IsNullOrEmpty(comment.Text))
                 bw.WriteTxoWithText(comment.Text.AsSpan());
             bw.WriteNote(comment.Row, comment.Col, false, shapeId, comment.Author.AsSpan());
+            shapeId++;
+        }
+
+        // 写入图表对象
+        foreach (var chart in sheet.Charts)
+        {
+            // 生成图表数据
+            var chartBuffer = new byte[65536];
+            var chartWriter = new ChartWriter(chartBuffer.AsSpan());
+            var chartDataLen = chartWriter.WriteChartStream(chart, sheetIndex);
+
+            // 写入MSODRAWING记录
+            bw.WriteMsodrawingChart(shapeId, chartBuffer.AsSpan(0, chartDataLen));
+
+            // 写入OBJ记录
+            bw.WriteObjChart(shapeId, chart);
+
             shapeId++;
         }
 

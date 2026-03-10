@@ -11,6 +11,8 @@ A high-performance **XLSX → XLS** converter library as part of the `Nedev.File
 - **Library + CLI** — core converter available as DLL and command‑line tool (see below).
 - **Core package integration** — the library implements `IFileConverter` and is decorated with `FileConverterAttribute` so it plugs into `Nedev.FileConverters.Core`’s discovery/DI helpers. Both the DLL and the CLI automatically register the converter via `ServiceCollectionExtensions.AddFileConverter`.
 
+- **Pluggable parser architecture** — formula handling now builds an abstract syntax tree (AST) as an intermediate representation (see `Internal/FormulaAst.cs`). The existing hand-written tokenizer feeds the AST builder, but this layer is considered "legacy" and is planned to be replaced by a full parser (Stage 2 refactor). Compile logic operates on the AST, making it easy to swap in third‑party parsers later.
+
 - **Zero third-party dependencies** — uses only `System.IO.Compression`, `System.Xml`, `System.Buffers`, and core .NET types.
 - **Performance-oriented** — `ArrayPool<byte>` for buffers, streaming `XmlReader` for XLSX, `Span<byte>` for BIFF output to minimize allocations.
 - **Multi‑targeted** — builds for `net8.0` and `netstandard2.1`; see Build instructions above.

@@ -906,4 +906,128 @@ internal ref struct BiffWriter
         BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)length);
         _position += 2;
     }
+
+    // 图表相关记录
+    public void WriteObjChart(ushort objectId, ChartData chart)
+    {
+        // OBJ记录 - 图表对象
+        WriteRecordHeader(0x005D, 38);
+
+        // 对象类型 (0x0005 = 图表)
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0005);
+        _position += 2;
+
+        // 对象ID
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), objectId);
+        _position += 2;
+
+        // 选项标志
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x6011);
+        _position += 2;
+
+        // 锁定标志
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0000);
+        _position += 2;
+
+        // 预留
+        _position += 4;
+
+        // 锚点信息 (以1/4000为单位)
+        var x = (uint)(chart.Position.X * 4000 / 100);
+        var y = (uint)(chart.Position.Y * 4000 / 100);
+        var width = (uint)(chart.Position.Width * 4000 / 100);
+        var height = (uint)(chart.Position.Height * 4000 / 100);
+
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), x);
+        _position += 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), y);
+        _position += 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), width);
+        _position += 4;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), height);
+        _position += 4;
+
+        // 预留
+        _position += 8;
+    }
+
+    public void WriteMsodrawingChart(ushort objectId, ReadOnlySpan<byte> chartData)
+    {
+        // MSODRAWING记录 - Office绘图对象
+        const ushort msodrawingType = 0x00EC;
+
+        // 写入Escher容器头部
+        var headerSize = 8;
+        var totalSize = headerSize + chartData.Length;
+
+        if (totalSize <= BiffMaxRecordData)
+        {
+            WriteRecordHeader(msodrawingType, totalSize);
+
+            // EscherSpgrContainer记录头
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0F00); // 版本和实例
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0000); // 类型 (SpgrContainer)
+            _position += 2;
+            BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), (uint)(8 + chartData.Length)); // 大小
+            _position += 4;
+
+            chartData.CopyTo(_buffer.Slice(_position));
+            _position += chartData.Length;
+        }
+        else
+        {
+            // 需要分块写入
+            var offset = 0;
+            var remaining = totalSize;
+            var isFirst = true;
+
+            while (remaining > 0)
+            {
+                var chunkSize = Math.Min(BiffMaxRecordData, remaining);
+                WriteRecordHeader(msodrawingType, chunkSize);
+
+                if (isFirst)
+                {
+                    // EscherSpgrContainer记录头
+                    BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0F00);
+                    _position += 2;
+                    BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0000);
+                    _position += 2;
+                    BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), (uint)(8 + chartData.Length));
+                    _position += 4;
+                    isFirst = false;
+                }
+
+                var dataToCopy = Math.Min(chunkSize - (isFirst ? 0 : 0), chartData.Length - offset);
+                if (dataToCopy > 0)
+                {
+                    chartData.Slice(offset, dataToCopy).CopyTo(_buffer.Slice(_position));
+                    _position += dataToCopy;
+                    offset += dataToCopy;
+                }
+
+                remaining -= chunkSize;
+            }
+        }
+    }
+
+    public void WriteBofChart()
+    {
+        WriteRecordHeader(0x0809, 16);
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0600);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0020); // 图表流
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0C0A);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x07CC);
+        _position += 2;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0x00000001);
+        _position += 4;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0006);
+        _position += 2;
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0x0000);
+        _position += 2;
+    }
 }

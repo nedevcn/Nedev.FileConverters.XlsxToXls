@@ -4,6 +4,17 @@ using System.Text;
 
 namespace Nedev.FileConverters.XlsxToXls.Internal;
 
+// FormulaCompiler currently provides two layers:
+// 1. a legacy tokenizer (Tokenize) that produces a flat token list from a formula string.
+// 2. an AST builder and byte emitter that operate over the token sequence.
+//
+// Stage 2 refactoring aims to make the tokenizer pluggable and eventually
+// replaceable by a third‑party parser; the AST types defined in FormulaAst.cs
+// serve as the universal intermediate representation.
+//
+// Clients should call Compile(formula, ...) which uses the AST path.
+// Helpers such as Tokenize are still used internally and exposed for tests but
+// may be removed once a full parser is adopted.
 internal static class FormulaCompiler
 {
     private readonly record struct Tok(TokKind Kind, string Text, double Number, bool Bool, int Row, int Col, int Row2, int Col2, int SheetIndex, bool HasSheet);
@@ -91,13 +102,251 @@ internal static class FormulaCompiler
         return list.ToArray();
     }
 
+    // parser abstraction (Stage2): callers can replace this with a richer parser.
+    public static IFormulaParser Parser { get; set; } = new SimpleFormulaParser();
+
+    // public compilation entry point now simply delegates to the configured parser.
     public static byte[] Compile(string formula, int currentSheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
     {
-        var tokens = Tokenize(formula, currentSheetIndex, sheetIndexByName);
+        var ast = Parser.Parse(formula, currentSheetIndex, sheetIndexByName);
         var outBytes = new List<byte>(64);
-        var ops = new Stack<(TokKind Kind, OpKind Op, string FuncName)>();
-        var funcArgCounts = new Stack<int>();
-        var funcHadArg = new Stack<bool>();
+        EmitFromAst(ast, outBytes);
+        return outBytes.ToArray();
+    }
+
+    // legacy parser that wraps the existing tokenize + AST builder logic
+    private class LegacyFormulaParser : IFormulaParser
+    {
+        public AstNode Parse(string formula, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
+        {
+            var tokens = Tokenize(formula, sheetIndex, sheetIndexByName);
+            return AstFromTokens(tokens, sheetIndex);
+        }
+    }
+
+    // simple hand-coded recursive-descent parser for formulas (Stage3 demonstration)
+    internal class SimpleFormulaParser : IFormulaParser
+    {
+        private string _input = string.Empty;
+        private int _pos;
+        private int _sheetIndex;
+        private IReadOnlyDictionary<string, int> _sheetIndexByName = new Dictionary<string,int>();
+
+        public AstNode Parse(string formula, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName)
+        {
+            _sheetIndex = sheetIndex;
+            _sheetIndexByName = sheetIndexByName;
+            _input = formula.StartsWith("=", System.StringComparison.Ordinal) ? formula.Substring(1) : formula;
+            _pos = 0;
+            var expr = ParseExpression();
+            SkipWhitespace();
+            if (_pos < _input.Length)
+                throw new FormatException($"Unexpected char '{_input[_pos]}' in formula");
+            return expr;
+        }
+
+        private void SkipWhitespace()
+        {
+            while (_pos < _input.Length && char.IsWhiteSpace(_input[_pos])) _pos++;
+        }
+
+        private char Peek() => _pos < _input.Length ? _input[_pos] : '\0';
+        private char Next() => _pos < _input.Length ? _input[_pos++] : '\0';
+
+        private AstNode ParseExpression(int minPrec = 0)
+        {
+            var left = ParseUnary();
+            while (true)
+            {
+                SkipWhitespace();
+                var op = PeekOperator();
+                if (op == null) break;
+                var prec = GetPrecedence(op);
+                if (prec < minPrec) break;
+                bool rightAssoc = IsRightAssoc(op);
+                // consume operator
+                for (int i = 0; i < op.Length; i++) _pos++;
+                var nextMin = prec + (rightAssoc ? 0 : 1);
+                var right = ParseExpression(nextMin);
+                left = new OperatorNode(op, left, right);
+            }
+            return left;
+        }
+
+        private AstNode ParseUnary()
+        {
+            SkipWhitespace();
+            if (Peek() == '+' || Peek() == '-')
+            {
+                var op = Next().ToString();
+                var operand = ParseUnary();
+                return new UnaryOperatorNode(op, operand);
+            }
+            return ParsePrimary();
+        }
+
+        private AstNode ParsePrimary()
+        {
+            SkipWhitespace();
+            var ch = Peek();
+            if (ch == '(')
+            {
+                Next();
+                var inner = ParseExpression();
+                SkipWhitespace();
+                if (Next() != ')') throw new FormatException("Missing closing parenthesis");
+                return inner;
+            }
+            if (ch == '"')
+            {
+                return new StringNode(ParseString());
+            }
+            if (char.IsDigit(ch) || ch == '.')
+            {
+                return new NumberNode(ParseNumber());
+            }
+            if (char.IsLetter(ch) || ch == '_' || ch == '\'')
+            {
+                // could be boolean, function, or reference
+                var id = ParseIdentifier();
+                if (id.Equals("TRUE", System.StringComparison.OrdinalIgnoreCase))
+                    return new BoolNode(true);
+                if (id.Equals("FALSE", System.StringComparison.OrdinalIgnoreCase))
+                    return new BoolNode(false);
+                SkipWhitespace();
+                if (Peek() == '(')
+                {
+                    // function call
+                    Next();
+                    var args = new List<AstNode>();
+                    SkipWhitespace();
+                    if (Peek() != ')')
+                    {
+                        while (true)
+                        {
+                            args.Add(ParseExpression());
+                            SkipWhitespace();
+                            if (Peek() == ',') { Next(); continue; }
+                            break;
+                        }
+                    }
+                    if (Next() != ')') throw new FormatException("Missing ')' after function args");
+                    return new FunctionNode(id, args);
+                }
+                // otherwise treat as reference/area
+                var refStr = id;
+                // consume following reference characters
+                while (char.IsLetterOrDigit(Peek()) || Peek() == '$' || Peek() == ':' || Peek() == '!' )
+                {
+                    refStr += Next();
+                }
+                if (TryParseA1OrArea(refStr, out int r1, out int c1, out int r2, out int c2, out bool isArea))
+                {
+                    if (isArea)
+                        return new AreaNode(r1, c1, r2, c2, _sheetIndex, false);
+                    else
+                        return new RefNode(r1, c1, _sheetIndex, false);
+                }
+                // fallback to identifier as string
+                return new StringNode(id);
+            }
+            throw new FormatException($"Unexpected character '{ch}'");
+        }
+
+        private string? PeekOperator()
+        {
+            var ops = new[] { ">=", "<=", "<>", ">", "<", "=", "+", "-", "*", "/", "^", "&" };
+            foreach (var op in ops)
+            {
+                if (_input.Substring(_pos).StartsWith(op, System.StringComparison.Ordinal))
+                    return op;
+            }
+            return null;
+        }
+
+        private int GetPrecedence(string op) => op switch
+        {
+            "^" => 4,
+            "*" or "/" => 3,
+            "+" or "-" => 2,
+            "&" => 1,
+            "=" or "<>" or ">" or "<" or ">=" or "<=" => 0,
+            _ => -1
+        };
+
+        private bool IsRightAssoc(string op) => op == "^";
+
+        private double ParseNumber()
+        {
+            var start = _pos;
+            while (_pos < _input.Length && (char.IsDigit(_input[_pos]) || _input[_pos] == '.' || _input[_pos] == 'E' || _input[_pos] == 'e' || _input[_pos] == '+' || _input[_pos] == '-'))
+            {
+                if ((_input[_pos] == '+' || _input[_pos] == '-') && _pos > start && !(_input[_pos-1] == 'e' || _input[_pos-1] == 'E'))
+                    break;
+                _pos++;
+            }
+            var text = _input[start.._pos];
+            if (!double.TryParse(text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v))
+                throw new FormatException($"Invalid number: {text}");
+            return v;
+        }
+
+        private string ParseString()
+        {
+            // assumes leading '"'
+            Next();
+            var sb = new System.Text.StringBuilder();
+            while (_pos < _input.Length)
+            {
+                if (Peek() == '"')
+                {
+                    Next();
+                    if (Peek() == '"') { sb.Append('"'); Next(); continue; }
+                    break;
+                }
+                sb.Append(Next());
+            }
+            return sb.ToString();
+        }
+
+        private string ParseIdentifier()
+        {
+            var start = _pos;
+            if (Peek() == '\'')
+            {
+                // quoted sheet name or identifier
+                Next();
+                while (_pos < _input.Length && Peek() != '\'')
+                {
+                    if (Peek() == '\'' && _pos+1 < _input.Length && _input[_pos+1] == '\'')
+                    {
+                        _pos += 2;
+                        continue;
+                    }
+                    _pos++;
+                }
+                if (Peek() == '\'') Next();
+                // consume optional !
+                if (Peek() == '!') { Next(); }
+                return _input[start.._pos];
+            }
+            while (_pos < _input.Length && (char.IsLetterOrDigit(Peek()) || Peek() == '_')) _pos++;
+            return _input[start.._pos];
+        }
+    }
+
+    // parser interface definition
+    public interface IFormulaParser
+    {
+        AstNode Parse(string formula, int sheetIndex, IReadOnlyDictionary<string, int> sheetIndexByName);
+    }
+
+
+    private static AstNode AstFromTokens(List<Tok> tokens, int currentSheet)
+    {
+        // shunting-yard variant that constructs AST nodes instead of raw tokens
+        var output = new Stack<AstNode>();
+        var ops = new Stack<Tok>();
 
         Tok? prev = null;
         foreach (var t in tokens)
@@ -105,94 +354,129 @@ internal static class FormulaCompiler
             switch (t.Kind)
             {
                 case TokKind.Number:
-                    EmitNumber(outBytes, t.Number);
-                    MarkFuncHasArg(funcHadArg);
+                    output.Push(new NumberNode(t.Number));
                     break;
                 case TokKind.String:
-                    EmitString(outBytes, t.Text);
-                    MarkFuncHasArg(funcHadArg);
+                    output.Push(new StringNode(t.Text));
                     break;
                 case TokKind.Bool:
-                    outBytes.Add(0x1D);
-                    outBytes.Add((byte)(t.Bool ? 1 : 0));
-                    MarkFuncHasArg(funcHadArg);
+                    output.Push(new BoolNode(t.Bool));
                     break;
                 case TokKind.Ref:
-                    EmitRef(outBytes, t, currentSheetIndex);
-                    MarkFuncHasArg(funcHadArg);
+                    output.Push(new RefNode(t.Row, t.Col, t.SheetIndex, t.HasSheet));
                     break;
                 case TokKind.Area:
-                    EmitArea(outBytes, t, currentSheetIndex);
-                    MarkFuncHasArg(funcHadArg);
+                    output.Push(new AreaNode(t.Row, t.Col, t.Row2, t.Col2, t.SheetIndex, t.HasSheet));
                     break;
                 case TokKind.Func:
-                    ops.Push((TokKind.Func, default, t.Text));
+                    ops.Push(t);
                     break;
                 case TokKind.Op:
                 {
-                    var op = ParseOp(t.Text, prev);
                     while (ops.Count > 0 && ops.Peek().Kind == TokKind.Op)
                     {
-                        var top = ops.Peek().Op;
-                        if ((IsRightAssoc(op) && Prec(op) < Prec(top)) || (!IsRightAssoc(op) && Prec(op) <= Prec(top)))
+                        var topOp = ParseOp(ops.Peek().Text, prev);
+                        var thisOp = ParseOp(t.Text, prev);
+                        if ((IsRightAssoc(thisOp) && Prec(thisOp) < Prec(topOp)) ||
+                            (!IsRightAssoc(thisOp) && Prec(thisOp) <= Prec(topOp)))
                         {
-                            EmitOp(outBytes, ops.Pop().Op);
+                            var opTok = ops.Pop();
+                            BuildOperatorNode(opTok, output);
                             continue;
                         }
                         break;
                     }
-                    ops.Push((TokKind.Op, op, ""));
+                    ops.Push(t);
                     break;
                 }
                 case TokKind.LParen:
-                    ops.Push((TokKind.LParen, default, ""));
-                    if (prev is { Kind: TokKind.Func })
-                    {
-                        funcArgCounts.Push(0);
-                        funcHadArg.Push(false);
-                    }
-                    break;
-                case TokKind.Comma:
-                    while (ops.Count > 0 && ops.Peek().Kind != TokKind.LParen)
-                    {
-                        if (ops.Peek().Kind == TokKind.Op) EmitOp(outBytes, ops.Pop().Op);
-                        else break;
-                    }
-                    if (funcArgCounts.Count > 0)
-                    {
-                        funcArgCounts.Push(funcArgCounts.Pop() + 1);
-                        if (funcHadArg.Count > 0) { funcHadArg.Pop(); funcHadArg.Push(true); }
-                    }
+                    ops.Push(t);
                     break;
                 case TokKind.RParen:
                     while (ops.Count > 0 && ops.Peek().Kind != TokKind.LParen)
                     {
-                        if (ops.Peek().Kind == TokKind.Op) EmitOp(outBytes, ops.Pop().Op);
-                        else break;
+                        var opTok = ops.Pop();
+                        BuildOperatorNode(opTok, output);
                     }
                     if (ops.Count == 0) throw new FormatException("Unbalanced parentheses");
-                    ops.Pop();
+                    ops.Pop(); // discard '('
                     if (ops.Count > 0 && ops.Peek().Kind == TokKind.Func)
                     {
-                        var fn = ops.Pop().FuncName;
-                        var argCount = funcArgCounts.Count > 0 ? funcArgCounts.Pop() : 0;
-                        var hadArg = funcHadArg.Count > 0 && funcHadArg.Pop();
-                        var cargs = hadArg ? (byte)(argCount + 1) : (byte)0;
-                        EmitFuncVar(outBytes, fn, cargs);
+                        var fnTok = ops.Pop();
+                        // consume arguments from output until marker (not implemented yet)
+                        // for now, assume single argument or none
+                        var args = new List<AstNode>();
+                        if (output.Count > 0) args.Add(output.Pop());
+                        output.Push(new FunctionNode(fnTok.Text, args));
                     }
                     break;
             }
             prev = t;
         }
-
         while (ops.Count > 0)
         {
-            var top = ops.Pop();
-            if (top.Kind is TokKind.LParen or TokKind.RParen) throw new FormatException("Unbalanced parentheses");
-            if (top.Kind == TokKind.Op) EmitOp(outBytes, top.Op);
+            var opTok = ops.Pop();
+            if (opTok.Kind == TokKind.LParen || opTok.Kind == TokKind.RParen)
+                throw new FormatException("Unbalanced parentheses");
+            BuildOperatorNode(opTok, output);
         }
+        return output.Count > 0 ? output.Pop() : new NumberNode(0);
+    }
 
-        return outBytes.ToArray();
+    private static void BuildOperatorNode(Tok opTok, Stack<AstNode> output)
+    {
+        var op = ParseOp(opTok.Text, null);
+        if (op == OpKind.UMinus)
+        {
+            var operand = output.Pop();
+            output.Push(new UnaryOperatorNode(opTok.Text, operand));
+        }
+        else
+        {
+            var right = output.Pop();
+            var left = output.Pop();
+            output.Push(new OperatorNode(opTok.Text, left, right));
+        }
+    }
+
+    private static void EmitFromAst(AstNode node, List<byte> outBytes)
+    {
+        switch (node)
+        {
+            case NumberNode n:
+                EmitNumber(outBytes, n.Value);
+                break;
+            case StringNode s:
+                EmitString(outBytes, s.Text);
+                break;
+            case BoolNode b:
+                outBytes.Add(0x1D);
+                outBytes.Add((byte)(b.Value ? 1 : 0));
+                break;
+            case RefNode r:
+                // reuse helper by creating temporary Tok
+                var t = new Tok(TokKind.Ref, "", 0, false, r.Row, r.Col, 0, 0, r.SheetIndex, r.HasSheet);
+                EmitRef(outBytes, t, r.SheetIndex);
+                break;
+            case AreaNode a:
+                var ta = new Tok(TokKind.Area, "", 0, false, a.Row1, a.Col1, a.Row2, a.Col2, a.SheetIndex, a.HasSheet);
+                EmitArea(outBytes, ta, a.SheetIndex);
+                break;
+            case OperatorNode op:
+                EmitFromAst(op.Left, outBytes);
+                EmitFromAst(op.Right, outBytes);
+                EmitOp(outBytes, ParseOp(op.Op, null));
+                break;
+            case UnaryOperatorNode u:
+                EmitFromAst(u.Operand, outBytes);
+                EmitOp(outBytes, ParseOp(u.Op, null));
+                break;
+            case FunctionNode f:
+                foreach (var arg in f.Arguments)
+                    EmitFromAst(arg, outBytes);
+                EmitFuncVar(outBytes, f.Name, (byte)f.Arguments.Count);
+                break;
+        }
     }
 
     private static void MarkFuncHasArg(Stack<bool> funcHadArg)
