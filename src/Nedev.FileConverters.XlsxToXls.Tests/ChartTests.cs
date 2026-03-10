@@ -921,5 +921,428 @@ namespace Nedev.FileConverters.XlsxToXls.Tests
             Assert.Contains("128", str);
             Assert.Contains("64", str);
         }
+
+        // 新增测试：数据点级别支持
+        [Fact]
+        public void ChartDataPoint_DefaultValues()
+        {
+            var point = new ChartDataPoint();
+            Assert.Equal(0, point.Index);
+            Assert.Null(point.FillColor);
+            Assert.Null(point.BorderColor);
+            Assert.Null(point.DataLabels);
+            Assert.Null(point.Explosion);
+        }
+
+        [Fact]
+        public void ChartSeries_WithDataPoints()
+        {
+            var series = new ChartSeries
+            {
+                Name = "SeriesWithPoints",
+                DataPoints = new List<ChartDataPoint>
+                {
+                    new() { Index = 0, FillColor = ChartColor.Red },
+                    new() { Index = 1, FillColor = ChartColor.Green },
+                    new() { Index = 2, FillColor = ChartColor.Blue, Explosion = true }
+                }
+            };
+
+            Assert.Equal(3, series.DataPoints.Count);
+            Assert.Equal(ChartColor.Red, series.DataPoints[0].FillColor);
+            Assert.True(series.DataPoints[2].Explosion);
+        }
+
+        // 新增测试：趋势线
+        [Fact]
+        public void TrendLine_DefaultValues()
+        {
+            var trendLine = new TrendLine();
+            Assert.Equal(TrendLineType.Linear, trendLine.Type);
+            Assert.Null(trendLine.Name);
+            Assert.False(trendLine.DisplayEquation);
+            Assert.False(trendLine.DisplayRSquared);
+            Assert.Equal(2, trendLine.Order);
+            Assert.Equal(2, trendLine.Period);
+        }
+
+        [Theory]
+        [InlineData(TrendLineType.Linear)]
+        [InlineData(TrendLineType.Exponential)]
+        [InlineData(TrendLineType.Logarithmic)]
+        [InlineData(TrendLineType.Polynomial)]
+        [InlineData(TrendLineType.Power)]
+        [InlineData(TrendLineType.MovingAverage)]
+        public void TrendLine_AllTypes(TrendLineType type)
+        {
+            var trendLine = new TrendLine { Type = type };
+            Assert.Equal(type, trendLine.Type);
+        }
+
+        [Fact]
+        public void ChartSeries_WithTrendLines()
+        {
+            var series = new ChartSeries
+            {
+                Name = "SeriesWithTrend",
+                TrendLines = new List<TrendLine>
+                {
+                    new()
+                    {
+                        Type = TrendLineType.Linear,
+                        DisplayEquation = true,
+                        DisplayRSquared = true,
+                        LineColor = ChartColor.Red
+                    },
+                    new()
+                    {
+                        Type = TrendLineType.Polynomial,
+                        Order = 3,
+                        LineColor = ChartColor.Blue
+                    }
+                }
+            };
+
+            Assert.Equal(2, series.TrendLines.Count);
+            Assert.True(series.TrendLines[0].DisplayEquation);
+            Assert.Equal(3, series.TrendLines[1].Order);
+        }
+
+        // 新增测试：误差线
+        [Fact]
+        public void ErrorBars_DefaultValues()
+        {
+            var errorBars = new ErrorBars();
+            Assert.Equal(ErrorBarType.Both, errorBars.Type);
+            Assert.Equal(ErrorBarValueType.FixedValue, errorBars.ValueType);
+            Assert.Equal(0, errorBars.Value);
+            Assert.True(errorBars.ShowCap);
+        }
+
+        [Theory]
+        [InlineData(ErrorBarType.Both)]
+        [InlineData(ErrorBarType.Plus)]
+        [InlineData(ErrorBarType.Minus)]
+        public void ErrorBars_AllTypes(ErrorBarType type)
+        {
+            var errorBars = new ErrorBars { Type = type };
+            Assert.Equal(type, errorBars.Type);
+        }
+
+        [Theory]
+        [InlineData(ErrorBarValueType.FixedValue)]
+        [InlineData(ErrorBarValueType.Percentage)]
+        [InlineData(ErrorBarValueType.StandardDeviation)]
+        [InlineData(ErrorBarValueType.StandardError)]
+        [InlineData(ErrorBarValueType.Custom)]
+        public void ErrorBars_AllValueTypes(ErrorBarValueType valueType)
+        {
+            var errorBars = new ErrorBars { ValueType = valueType };
+            Assert.Equal(valueType, errorBars.ValueType);
+        }
+
+        [Fact]
+        public void ChartSeries_WithErrorBars()
+        {
+            var series = new ChartSeries
+            {
+                Name = "SeriesWithErrorBars",
+                ErrorBars = new ErrorBars
+                {
+                    Type = ErrorBarType.Both,
+                    ValueType = ErrorBarValueType.Percentage,
+                    Value = 5.0,
+                    ShowCap = true,
+                    LineColor = ChartColor.Gray
+                }
+            };
+
+            Assert.NotNull(series.ErrorBars);
+            Assert.Equal(5.0, series.ErrorBars.Value);
+            Assert.Equal(ErrorBarValueType.Percentage, series.ErrorBars.ValueType);
+        }
+
+        // 新增测试：ChartWriter 写入数据点
+        [Fact]
+        public void ChartWriter_WritesDataPoints()
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 16384);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "ChartWithDataPoints",
+                    Type = ChartType.Pie,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "PieSeries",
+                            SeriesIndex = 0,
+                            DataPoints = new List<ChartDataPoint>
+                            {
+                                new() { Index = 0, FillColor = ChartColor.Red, Explosion = true },
+                                new() { Index = 1, FillColor = ChartColor.Green },
+                                new() { Index = 2, FillColor = ChartColor.Blue, DataLabels = new DataLabels { Show = true, ShowValue = true } }
+                            }
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：ChartWriter 写入趋势线
+        [Fact]
+        public void ChartWriter_WritesTrendLines()
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 16384);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "ChartWithTrendLines",
+                    Type = ChartType.Line,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "SeriesWithTrend",
+                            SeriesIndex = 0,
+                            TrendLines = new List<TrendLine>
+                            {
+                                new()
+                                {
+                                    Type = TrendLineType.Linear,
+                                    Name = "Linear Trend",
+                                    DisplayEquation = true,
+                                    DisplayRSquared = true,
+                                    LineColor = ChartColor.Red,
+                                    LineStyle = LineStyle.Dash
+                                }
+                            }
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：ChartWriter 写入误差线
+        [Fact]
+        public void ChartWriter_WritesErrorBars()
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 16384);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "ChartWithErrorBars",
+                    Type = ChartType.Column,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "SeriesWithErrors",
+                            SeriesIndex = 0,
+                            ErrorBars = new ErrorBars
+                            {
+                                Type = ErrorBarType.Both,
+                                ValueType = ErrorBarValueType.StandardDeviation,
+                                Value = 1.0,
+                                ShowCap = true,
+                                LineColor = ChartColor.Gray
+                            }
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：所有趋势线类型写入
+        [Theory]
+        [InlineData(TrendLineType.Linear)]
+        [InlineData(TrendLineType.Exponential)]
+        [InlineData(TrendLineType.Logarithmic)]
+        [InlineData(TrendLineType.Polynomial)]
+        [InlineData(TrendLineType.Power)]
+        [InlineData(TrendLineType.MovingAverage)]
+        public void ChartWriter_WritesAllTrendLineTypes(TrendLineType type)
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 8192);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "TrendLineChart",
+                    Type = ChartType.Line,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "Series",
+                            SeriesIndex = 0,
+                            TrendLines = new List<TrendLine>
+                            {
+                                new() { Type = type }
+                            }
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：所有误差线类型写入
+        [Theory]
+        [InlineData(ErrorBarType.Both)]
+        [InlineData(ErrorBarType.Plus)]
+        [InlineData(ErrorBarType.Minus)]
+        public void ChartWriter_WritesAllErrorBarTypes(ErrorBarType type)
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 8192);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "ErrorBarChart",
+                    Type = ChartType.Column,
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "Series",
+                            SeriesIndex = 0,
+                            ErrorBars = new ErrorBars { Type = type }
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 0);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
+
+        // 新增测试：组合图表类型属性
+        [Fact]
+        public void ChartSeries_SecondaryAxisProperties()
+        {
+            var series = new ChartSeries
+            {
+                Name = "SecondarySeries",
+                SecondaryChartType = ChartType.Line,
+                UseSecondaryAxis = true
+            };
+
+            Assert.Equal(ChartType.Line, series.SecondaryChartType);
+            Assert.True(series.UseSecondaryAxis);
+        }
+
+        // 新增测试：完整功能图表
+        [Fact]
+        public void ChartWriter_FullFeaturedChart()
+        {
+            var writer = ChartWriter.CreatePooled(out var buffer, 32768);
+            try
+            {
+                var chart = new ChartData
+                {
+                    Name = "FullFeaturedChart",
+                    Type = ChartType.Column,
+                    Title = new ChartTitle { Text = "Complete Chart Example" },
+                    Legend = new ChartLegend { Show = true, Position = LegendPosition.Right },
+                    CategoryAxis = new ChartAxis
+                    {
+                        Type = AxisType.Category,
+                        Position = AxisPosition.Bottom,
+                        Title = "Categories"
+                    },
+                    ValueAxis = new ChartAxis
+                    {
+                        Type = AxisType.Value,
+                        Position = AxisPosition.Left,
+                        Title = "Values",
+                        MinValue = 0,
+                        MaxValue = 100
+                    },
+                    Series = new List<ChartSeries>
+                    {
+                        new()
+                        {
+                            Name = "Primary Series",
+                            SeriesIndex = 0,
+                            FillColor = ChartColor.Blue,
+                            DataPoints = new List<ChartDataPoint>
+                            {
+                                new() { Index = 0, FillColor = ChartColor.Red },
+                                new() { Index = 1, FillColor = ChartColor.Green },
+                                new() { Index = 2, FillColor = ChartColor.Yellow }
+                            },
+                            TrendLines = new List<TrendLine>
+                            {
+                                new()
+                                {
+                                    Type = TrendLineType.Linear,
+                                    DisplayEquation = true,
+                                    LineColor = ChartColor.DarkBlue
+                                }
+                            },
+                            ErrorBars = new ErrorBars
+                            {
+                                Type = ErrorBarType.Both,
+                                ValueType = ErrorBarValueType.Percentage,
+                                Value = 5.0
+                            }
+                        },
+                        new()
+                        {
+                            Name = "Secondary Series",
+                            SeriesIndex = 1,
+                            SecondaryChartType = ChartType.Line,
+                            UseSecondaryAxis = true,
+                            FillColor = ChartColor.Orange,
+                            LineStyle = LineStyle.Solid,
+                            MarkerStyle = MarkerStyle.Circle
+                        }
+                    }
+                };
+
+                var bytesWritten = writer.WriteChartStream(chart, 0);
+                Assert.True(bytesWritten > 200);
+            }
+            finally
+            {
+                writer.Dispose();
+            }
+        }
     }
 }

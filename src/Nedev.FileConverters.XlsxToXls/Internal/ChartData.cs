@@ -56,6 +56,87 @@ public sealed class ChartSeries
     public ChartColor? BorderColor { get; set; }
     public LineStyle? LineStyle { get; set; }
     public MarkerStyle MarkerStyle { get; set; } = MarkerStyle.None;
+
+    // 数据点级别设置
+    public List<ChartDataPoint>? DataPoints { get; set; }
+
+    // 趋势线
+    public List<TrendLine>? TrendLines { get; set; }
+
+    // 误差线
+    public ErrorBars? ErrorBars { get; set; }
+
+    // 组合图表类型（用于组合图表）
+    public ChartType? SecondaryChartType { get; set; }
+    public bool UseSecondaryAxis { get; set; }
+}
+
+/// <summary>
+/// 图表数据点 - 支持单个数据点的独立样式
+/// </summary>
+public sealed class ChartDataPoint
+{
+    public int Index { get; set; }
+    public ChartColor? FillColor { get; set; }
+    public ChartColor? BorderColor { get; set; }
+    public DataLabels? DataLabels { get; set; }
+    public bool? Explosion { get; set; }
+}
+
+/// <summary>
+/// 趋势线
+/// </summary>
+public sealed class TrendLine
+{
+    public TrendLineType Type { get; set; } = TrendLineType.Linear;
+    public string? Name { get; set; }
+    public bool DisplayEquation { get; set; }
+    public bool DisplayRSquared { get; set; }
+    public ChartColor? LineColor { get; set; }
+    public LineStyle LineStyle { get; set; } = LineStyle.Solid;
+    public int Order { get; set; } = 2;
+    public int Period { get; set; } = 2;
+    public double? Forward { get; set; }
+    public double? Backward { get; set; }
+}
+
+public enum TrendLineType : byte
+{
+    Linear = 0,
+    Exponential = 1,
+    Logarithmic = 2,
+    Polynomial = 3,
+    Power = 4,
+    MovingAverage = 5
+}
+
+/// <summary>
+/// 误差线
+/// </summary>
+public sealed class ErrorBars
+{
+    public ErrorBarType Type { get; set; } = ErrorBarType.Both;
+    public ErrorBarValueType ValueType { get; set; } = ErrorBarValueType.FixedValue;
+    public double Value { get; set; }
+    public bool ShowCap { get; set; } = true;
+    public ChartColor? LineColor { get; set; }
+    public LineStyle LineStyle { get; set; } = LineStyle.Solid;
+}
+
+public enum ErrorBarType : byte
+{
+    Both = 0,
+    Plus = 1,
+    Minus = 2
+}
+
+public enum ErrorBarValueType : byte
+{
+    FixedValue = 0,
+    Percentage = 1,
+    StandardDeviation = 2,
+    StandardError = 3,
+    Custom = 4
 }
 
 public sealed class DataLabels

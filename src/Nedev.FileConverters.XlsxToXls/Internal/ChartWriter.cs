@@ -237,8 +237,174 @@ internal ref struct ChartWriter
             WriteSeriesColor(series.FillColor.Value);
         }
 
+        // 数据点级别设置
+        if (series.DataPoints?.Count > 0)
+        {
+            foreach (var point in series.DataPoints)
+            {
+                WriteDataPoint(point);
+            }
+        }
+
+        // 趋势线
+        if (series.TrendLines?.Count > 0)
+        {
+            foreach (var trendLine in series.TrendLines)
+            {
+                WriteTrendLine(trendLine);
+            }
+        }
+
+        // 误差线
+        if (series.ErrorBars != null)
+        {
+            WriteErrorBars(series.ErrorBars);
+        }
+
         // 系列结束标记
         WriteRecordHeader(0x1004, 0);
+    }
+
+    private void WriteDataPoint(ChartDataPoint point)
+    {
+        // DATAPOINT记录 (0x1006)
+        WriteRecordHeader(0x1006, 12);
+
+        // 数据点索引
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)point.Index);
+        _position += 2;
+
+        // 标志位
+        var flags = 0u;
+        if (point.FillColor.HasValue) flags |= 0x0001;
+        if (point.BorderColor.HasValue) flags |= 0x0002;
+        if (point.DataLabels?.Show == true) flags |= 0x0004;
+        if (point.Explosion.HasValue) flags |= 0x0008;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), flags);
+        _position += 4;
+
+        // 爆炸距离（用于饼图）
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(point.Explosion.GetValueOrDefault() ? 25 : 0));
+        _position += 2;
+
+        // 预留
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0);
+        _position += 4;
+
+        // 写入数据点颜色
+        if (point.FillColor.HasValue)
+        {
+            WriteSeriesColor(point.FillColor.Value);
+        }
+
+        // 写入数据点数据标签
+        if (point.DataLabels?.Show == true)
+        {
+            WriteDataLabels(point.DataLabels);
+        }
+    }
+
+    private void WriteTrendLine(TrendLine trendLine)
+    {
+        // TRENDLINE记录 (0x1040)
+        var nameBytes = string.IsNullOrEmpty(trendLine.Name) ? Array.Empty<byte>() : Encoding.Unicode.GetBytes(trendLine.Name);
+        var recLen = 20 + (nameBytes.Length > 0 ? 4 + nameBytes.Length : 0);
+
+        WriteRecordHeader(0x1040, recLen);
+
+        // 趋势线类型
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)trendLine.Type);
+        _position += 2;
+
+        // 阶数（多项式）/ 周期（移动平均）
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)(trendLine.Type == TrendLineType.Polynomial ? trendLine.Order : trendLine.Period));
+        _position += 2;
+
+        // 前推
+        BufferHelpers.WriteDoubleLittleEndian(_buffer.Slice(_position), trendLine.Forward.GetValueOrDefault(0));
+        _position += 8;
+
+        // 后推
+        BufferHelpers.WriteDoubleLittleEndian(_buffer.Slice(_position), trendLine.Backward.GetValueOrDefault(0));
+        _position += 8;
+
+        // 标志位
+        var flags = 0u;
+        if (trendLine.DisplayEquation) flags |= 0x0001;
+        if (trendLine.DisplayRSquared) flags |= 0x0002;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), flags);
+        _position += 4;
+
+        // 趋势线名称
+        if (nameBytes.Length > 0)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)trendLine.Name!.Length);
+            _position += 2;
+            _buffer[_position++] = 1; // Unicode
+            nameBytes.CopyTo(_buffer.Slice(_position));
+            _position += nameBytes.Length;
+        }
+
+        // 趋势线线条样式
+        if (trendLine.LineColor.HasValue || trendLine.LineStyle != LineStyle.Solid)
+        {
+            WriteRecordHeader(0x100E, 12);
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)trendLine.LineStyle);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 25);
+            _position += 2;
+            var lineFlags = trendLine.LineColor.HasValue ? 1u : 0u;
+            BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), lineFlags);
+            _position += 4;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+        }
+    }
+
+    private void WriteErrorBars(ErrorBars errorBars)
+    {
+        // ERRORBARS记录 (0x103D)
+        WriteRecordHeader(0x103D, 20);
+
+        // 误差线类型
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)errorBars.Type);
+        _position += 2;
+
+        // 值类型
+        BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)errorBars.ValueType);
+        _position += 2;
+
+        // 值
+        BufferHelpers.WriteDoubleLittleEndian(_buffer.Slice(_position), errorBars.Value);
+        _position += 8;
+
+        // 标志位
+        var flags = errorBars.ShowCap ? 1u : 0u;
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), flags);
+        _position += 4;
+
+        // 预留
+        BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), 0);
+        _position += 4;
+
+        // 误差线线条样式
+        if (errorBars.LineColor.HasValue || errorBars.LineStyle != LineStyle.Solid)
+        {
+            WriteRecordHeader(0x100E, 12);
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), (ushort)errorBars.LineStyle);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 25);
+            _position += 2;
+            var lineFlags = errorBars.LineColor.HasValue ? 1u : 0u;
+            BinaryPrimitives.WriteUInt32LittleEndian(_buffer.Slice(_position), lineFlags);
+            _position += 4;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+            BinaryPrimitives.WriteUInt16LittleEndian(_buffer.Slice(_position), 0);
+            _position += 2;
+        }
     }
 
     private void WriteDataLabels(DataLabels labels)

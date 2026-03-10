@@ -287,11 +287,229 @@ internal static class ChartReader
                         ReadSeriesStyle(reader, ns, series);
                         depth--;
                         break;
+                    case "dPt":
+                        var point = ReadDataPoint(reader, ns);
+                        if (point != null)
+                        {
+                            series.DataPoints ??= new List<ChartDataPoint>();
+                            series.DataPoints.Add(point);
+                        }
+                        depth--;
+                        break;
+                    case "trendline":
+                        var trendLine = ReadTrendLine(reader, ns);
+                        if (trendLine != null)
+                        {
+                            series.TrendLines ??= new List<TrendLine>();
+                            series.TrendLines.Add(trendLine);
+                        }
+                        depth--;
+                        break;
+                    case "errBars":
+                        series.ErrorBars = ReadErrorBars(reader, ns);
+                        depth--;
+                        break;
                 }
             }
             else if (reader.NodeType == XmlNodeType.EndElement) depth--;
         }
         return series;
+    }
+
+    private static ChartDataPoint? ReadDataPoint(XmlReader reader, string ns)
+    {
+        var point = new ChartDataPoint();
+        var idx = reader.GetAttribute("idx");
+        if (idx != null && int.TryParse(idx, out var index))
+        {
+            point.Index = index;
+        }
+
+        if (reader.IsEmptyElement) return point;
+
+        var aNs = "http://schemas.openxmlformats.org/drawingml/2006/main";
+        var depth = 1;
+        while (reader.Read() && depth > 0)
+        {
+            if (reader.NodeType == XmlNodeType.Element)
+            {
+                if (reader.LocalName == "solidFill" && reader.NamespaceURI == aNs)
+                {
+                    var color = ReadColor(reader, aNs);
+                    if (color.HasValue) point.FillColor = color.Value;
+                }
+                else if (reader.LocalName == "ln" && reader.NamespaceURI == aNs)
+                {
+                    var color = ReadColor(reader, aNs);
+                    if (color.HasValue) point.BorderColor = color.Value;
+                }
+                else if (reader.LocalName == "dLbl" && reader.NamespaceURI == ns)
+                {
+                    point.DataLabels = ReadDataLabels(reader, ns);
+                }
+                else if (reader.LocalName == "explosion" && reader.NamespaceURI == ns)
+                {
+                    var val = reader.GetAttribute("val");
+                    point.Explosion = val != null && int.TryParse(val, out var exp) && exp > 0;
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement) depth--;
+        }
+        return point;
+    }
+
+    private static TrendLine? ReadTrendLine(XmlReader reader, string ns)
+    {
+        var trendLine = new TrendLine();
+
+        // 读取趋势线类型
+        var type = reader.GetAttribute("trendlineType");
+        trendLine.Type = type switch
+        {
+            "linear" => TrendLineType.Linear,
+            "exp" => TrendLineType.Exponential,
+            "log" => TrendLineType.Logarithmic,
+            "poly" => TrendLineType.Polynomial,
+            "power" => TrendLineType.Power,
+            "movingAvg" => TrendLineType.MovingAverage,
+            _ => TrendLineType.Linear
+        };
+
+        // 读取阶数（多项式）
+        var order = reader.GetAttribute("order");
+        if (order != null && int.TryParse(order, out var ord))
+        {
+            trendLine.Order = ord;
+        }
+
+        // 读取周期（移动平均）
+        var period = reader.GetAttribute("period");
+        if (period != null && int.TryParse(period, out var per))
+        {
+            trendLine.Period = per;
+        }
+
+        if (reader.IsEmptyElement) return trendLine;
+
+        var aNs = "http://schemas.openxmlformats.org/drawingml/2006/main";
+        var depth = 1;
+        while (reader.Read() && depth > 0)
+        {
+            if (reader.NodeType == XmlNodeType.Element)
+            {
+                if (reader.LocalName == "trendlineLbl" && reader.NamespaceURI == ns)
+                {
+                    var depth2 = 1;
+                    while (reader.Read() && depth2 > 0)
+                    {
+                        if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == ns)
+                        {
+                            if (reader.LocalName == "showEq")
+                            {
+                                var val = reader.GetAttribute("val");
+                                trendLine.DisplayEquation = val == "1";
+                            }
+                            else if (reader.LocalName == "showRSqrVal")
+                            {
+                                var val = reader.GetAttribute("val");
+                                trendLine.DisplayRSquared = val == "1";
+                            }
+                        }
+                        else if (reader.NodeType == XmlNodeType.EndElement) depth2--;
+                    }
+                }
+                else if (reader.LocalName == "spPr" && reader.NamespaceURI == aNs)
+                {
+                    var depth2 = 1;
+                    while (reader.Read() && depth2 > 0)
+                    {
+                        if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == aNs)
+                        {
+                            if (reader.LocalName == "solidFill")
+                            {
+                                var color = ReadColor(reader, aNs);
+                                if (color.HasValue) trendLine.LineColor = color.Value;
+                            }
+                            else if (reader.LocalName == "prstDash")
+                            {
+                                var val = reader.GetAttribute("val");
+                                trendLine.LineStyle = val switch
+                                {
+                                    "solid" => LineStyle.Solid,
+                                    "dash" => LineStyle.Dash,
+                                    "dot" => LineStyle.Dot,
+                                    "dashDot" => LineStyle.DashDot,
+                                    _ => LineStyle.Solid
+                                };
+                            }
+                        }
+                        else if (reader.NodeType == XmlNodeType.EndElement) depth2--;
+                    }
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement) depth--;
+        }
+        return trendLine;
+    }
+
+    private static ErrorBars? ReadErrorBars(XmlReader reader, string ns)
+    {
+        var errorBars = new ErrorBars();
+
+        // 读取误差线方向
+        var errDir = reader.GetAttribute("errDir");
+        if (errDir == "X")
+        {
+            // X轴误差线
+        }
+
+        // 读取误差线类型
+        var errBarType = reader.GetAttribute("errBarType");
+        errorBars.Type = errBarType switch
+        {
+            "both" => ErrorBarType.Both,
+            "plus" => ErrorBarType.Plus,
+            "minus" => ErrorBarType.Minus,
+            _ => ErrorBarType.Both
+        };
+
+        if (reader.IsEmptyElement) return errorBars;
+
+        var depth = 1;
+        while (reader.Read() && depth > 0)
+        {
+            if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == ns)
+            {
+                if (reader.LocalName == "errValType")
+                {
+                    var val = reader.GetAttribute("val");
+                    errorBars.ValueType = val switch
+                    {
+                        "fixedVal" => ErrorBarValueType.FixedValue,
+                        "percentage" => ErrorBarValueType.Percentage,
+                        "stdDev" => ErrorBarValueType.StandardDeviation,
+                        "stdErr" => ErrorBarValueType.StandardError,
+                        "cust" => ErrorBarValueType.Custom,
+                        _ => ErrorBarValueType.FixedValue
+                    };
+                }
+                else if (reader.LocalName == "val")
+                {
+                    var val = reader.GetAttribute("val");
+                    if (val != null && double.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+                    {
+                        errorBars.Value = v;
+                    }
+                }
+                else if (reader.LocalName == "noEndCap")
+                {
+                    var val = reader.GetAttribute("val");
+                    errorBars.ShowCap = val != "1";
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement) depth--;
+        }
+        return errorBars;
     }
 
     private static DataLabels? ReadDataLabels(XmlReader reader, string ns)
