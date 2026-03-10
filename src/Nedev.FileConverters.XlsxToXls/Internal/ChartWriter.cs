@@ -1,20 +1,47 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 
 namespace Nedev.FileConverters.XlsxToXls.Internal;
 
 /// <summary>
-/// BIFF8图表记录写入器
+/// BIFF8图表记录写入器 - 使用ArrayPool减少内存分配
 /// </summary>
 internal ref struct ChartWriter
 {
     private Span<byte> _buffer;
     private int _position;
+    private byte[]? _pooledBuffer;
 
     public ChartWriter(Span<byte> buffer)
     {
         _buffer = buffer;
         _position = 0;
+        _pooledBuffer = null;
+    }
+
+    /// <summary>
+    /// 使用ArrayPool创建ChartWriter，自动管理缓冲区
+    /// </summary>
+    public static ChartWriter CreatePooled(out byte[] pooledBuffer, int minSize = 65536)
+    {
+        pooledBuffer = ArrayPool<byte>.Shared.Rent(minSize);
+        return new ChartWriter(pooledBuffer.AsSpan())
+        {
+            _pooledBuffer = pooledBuffer
+        };
+    }
+
+    /// <summary>
+    /// 释放ArrayPool缓冲区（如果使用了CreatePooled）
+    /// </summary>
+    public void Dispose()
+    {
+        if (_pooledBuffer != null)
+        {
+            ArrayPool<byte>.Shared.Return(_pooledBuffer);
+            _pooledBuffer = null;
+        }
     }
 
     public int Position => _position;

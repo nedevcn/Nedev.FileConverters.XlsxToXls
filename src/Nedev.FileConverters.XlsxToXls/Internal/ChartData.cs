@@ -47,6 +47,77 @@ public sealed class ChartSeries
     public int CategoryIndex { get; set; }
     public int ValueIndex { get; set; }
     public int BubbleIndex { get; set; } = -1;
+
+    // 数据标签设置
+    public DataLabels? DataLabels { get; set; }
+
+    // 系列样式
+    public ChartColor? FillColor { get; set; }
+    public ChartColor? BorderColor { get; set; }
+    public LineStyle? LineStyle { get; set; }
+    public MarkerStyle MarkerStyle { get; set; } = MarkerStyle.None;
+}
+
+public sealed class DataLabels
+{
+    public bool Show { get; set; } = true;
+    public bool ShowValue { get; set; } = true;
+    public bool ShowCategory { get; set; }
+    public bool ShowPercentage { get; set; }
+    public bool ShowSeriesName { get; set; }
+    public DataLabelPosition Position { get; set; } = DataLabelPosition.OutsideEnd;
+}
+
+public enum DataLabelPosition : byte
+{
+    Center = 0,
+    InsideEnd = 1,
+    OutsideEnd = 2,
+    BestFit = 3,
+    Left = 4,
+    Right = 5,
+    Above = 6,
+    Below = 7
+}
+
+public enum MarkerStyle : byte
+{
+    None = 0,
+    Square = 1,
+    Diamond = 2,
+    Triangle = 3,
+    X = 4,
+    Star = 5,
+    Dot = 6,
+    Circle = 7,
+    Plus = 8
+}
+
+public enum LineStyle : byte
+{
+    Solid = 0,
+    Dash = 1,
+    Dot = 2,
+    DashDot = 3,
+    DashDotDot = 4,
+    None = 5
+}
+
+public readonly record struct ChartColor(byte R, byte G, byte B)
+{
+    public static ChartColor FromRgb(byte r, byte g, byte b) => new(r, g, b);
+
+    public static readonly ChartColor Red = new(255, 0, 0);
+    public static readonly ChartColor Green = new(0, 255, 0);
+    public static readonly ChartColor Blue = new(0, 0, 255);
+    public static readonly ChartColor Yellow = new(255, 255, 0);
+    public static readonly ChartColor Cyan = new(0, 255, 255);
+    public static readonly ChartColor Magenta = new(255, 0, 255);
+    public static readonly ChartColor Black = new(0, 0, 0);
+    public static readonly ChartColor White = new(255, 255, 255);
+    public static readonly ChartColor Gray = new(128, 128, 128);
+    public static readonly ChartColor Orange = new(255, 165, 0);
+    public static readonly ChartColor Purple = new(128, 0, 128);
 }
 
 public sealed class ChartRange

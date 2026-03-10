@@ -18,11 +18,11 @@ internal static partial class XlsxReader
         ConformanceLevel = ConformanceLevel.Fragment
     };
 
-    public static (List<ReadOnlyMemory<char>> SharedStrings, List<SheetData> Sheets, StylesData? Styles, List<DefinedNameInfo> DefinedNames) Read(Stream xlsxStream)
+    public static (List<ReadOnlyMemory<char>> SharedStrings, List<SheetData> Sheets, StylesData? Styles, List<DefinedNameInfo> DefinedNames) Read(Stream xlsxStream, Action<string>? log = null)
     {
         using var archive = new ZipArchive(xlsxStream, ZipArchiveMode.Read, leaveOpen: true);
         var sharedStrings = ReadSharedStrings(archive);
-        var (sheets, definedNames) = ReadSheetsAndDefinedNames(archive);
+        var (sheets, definedNames) = ReadSheetsAndDefinedNames(archive, log);
         var styles = StylesReader.Read(archive);
         return (sharedStrings, sheets, styles, definedNames);
     }
@@ -86,7 +86,7 @@ internal static partial class XlsxReader
         return sb.ToString();
     }
 
-    private static (List<SheetData> Sheets, List<DefinedNameInfo> DefinedNames) ReadSheetsAndDefinedNames(ZipArchive archive)
+    private static (List<SheetData> Sheets, List<DefinedNameInfo> DefinedNames) ReadSheetsAndDefinedNames(ZipArchive archive, Action<string>? log = null)
     {
         var rels = ReadWorkbookRels(archive);
         var (sheetIds, definedNames) = ReadSheetIdsAndDefinedNames(archive);
@@ -98,7 +98,7 @@ internal static partial class XlsxReader
             if (!rels.TryGetValue(rId, out var path)) continue;
             var (rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, printOptions, headerFooter, hyperlinks, dataValidations, conditionalFormats) = ReadWorksheet(archive, path);
             var comments = ReadSheetComments(archive, path);
-            var charts = ChartReader.ReadCharts(archive, path);
+            var charts = ChartReader.ReadCharts(archive, path, log);
             list.Add(new SheetData(name, rows, colInfos, mergeRanges, freezePane, rowBreaks, colBreaks, pageSetup, pageMargins, printOptions, headerFooter, hyperlinks, comments, dataValidations, conditionalFormats, sheetId.Visibility, charts));
         }
         return (list, definedNames);

@@ -42,7 +42,7 @@ public static class XlsxToXlsConverter
     /// features fail to compile.</param>
     public static void Convert(Stream xlsxStream, Stream xlsStream, Action<string>? log = null)
     {
-        var (sharedStrings, sheets, styles, definedNames) = XlsxReader.Read(xlsxStream);
+        var (sharedStrings, sheets, styles, definedNames) = XlsxReader.Read(xlsxStream, log);
         var stylesData = styles ?? CreateDefaultStyles();
         var biffSize = EstimateBiffSize(sharedStrings, sheets, stylesData, definedNames);
         var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(biffSize, 256 * 1024));
@@ -491,18 +491,24 @@ public static class XlsxToXlsConverter
         // 写入图表对象
         foreach (var chart in sheet.Charts)
         {
-            // 生成图表数据
-            var chartBuffer = new byte[65536];
-            var chartWriter = new ChartWriter(chartBuffer.AsSpan());
-            var chartDataLen = chartWriter.WriteChartStream(chart, sheetIndex);
+            // 使用ArrayPool减少内存分配
+            var chartWriter = ChartWriter.CreatePooled(out var chartBuffer, 65536);
+            try
+            {
+                var chartDataLen = chartWriter.WriteChartStream(chart, sheetIndex);
 
-            // 写入MSODRAWING记录
-            bw.WriteMsodrawingChart(shapeId, chartBuffer.AsSpan(0, chartDataLen));
+                // 写入MSODRAWING记录
+                bw.WriteMsodrawingChart(shapeId, chartBuffer.AsSpan(0, chartDataLen));
 
-            // 写入OBJ记录
-            bw.WriteObjChart(shapeId, chart);
+                // 写入OBJ记录
+                bw.WriteObjChart(shapeId, chart);
 
-            shapeId++;
+                shapeId++;
+            }
+            finally
+            {
+                chartWriter.Dispose();
+            }
         }
 
         if (sheet.DataValidations.Count > 0)

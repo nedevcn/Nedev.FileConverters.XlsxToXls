@@ -16,17 +16,43 @@ internal static class ChartReader
         DtdProcessing = DtdProcessing.Prohibit
     };
 
-    public static List<ChartData> ReadCharts(ZipArchive archive, string worksheetPath)
+    public static List<ChartData> ReadCharts(ZipArchive archive, string worksheetPath, Action<string>? log = null)
     {
         var charts = new List<ChartData>();
-        var drawingPath = FindDrawingPath(archive, worksheetPath);
-        if (string.IsNullOrEmpty(drawingPath)) return charts;
-
-        var chartRefs = ReadDrawingForCharts(archive, drawingPath);
-        foreach (var chartPath in chartRefs)
+        try
         {
-            var chart = ReadChartFile(archive, chartPath);
-            if (chart != null) charts.Add(chart);
+            var drawingPath = FindDrawingPath(archive, worksheetPath);
+            if (string.IsNullOrEmpty(drawingPath))
+            {
+                log?.Invoke($"[ChartReader] No drawing found for worksheet: {worksheetPath}");
+                return charts;
+            }
+
+            log?.Invoke($"[ChartReader] Found drawing: {drawingPath}");
+
+            var chartRefs = ReadDrawingForCharts(archive, drawingPath);
+            log?.Invoke($"[ChartReader] Found {chartRefs.Count} chart references");
+
+            foreach (var chartPath in chartRefs)
+            {
+                try
+                {
+                    var chart = ReadChartFile(archive, chartPath, log);
+                    if (chart != null)
+                    {
+                        charts.Add(chart);
+                        log?.Invoke($"[ChartReader] Successfully read chart: {chart.Name} ({chart.Type})");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    log?.Invoke($"[ChartReader] Error reading chart from {chartPath}: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"[ChartReader] Error reading charts: {ex.Message}");
         }
         return charts;
     }
@@ -107,10 +133,16 @@ internal static class ChartReader
         return null;
     }
 
-    private static ChartData? ReadChartFile(ZipArchive archive, string chartPath)
+    private static ChartData? ReadChartFile(ZipArchive archive, string chartPath, Action<string>? log = null)
     {
         var entry = archive.GetEntry(chartPath) ?? archive.GetEntry("xl/charts/" + chartPath.Split('/').Last());
-        if (entry == null) return null;
+        if (entry == null)
+        {
+            log?.Invoke($"[ChartReader] Chart file not found: {chartPath}");
+            return null;
+        }
+
+        log?.Invoke($"[ChartReader] Reading chart file: {chartPath}");
 
         var chart = new ChartData();
         using var stream = entry.Open();
