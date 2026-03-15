@@ -2,7 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 using Nedev.FileConverters.XlsxToXls.Internal;
-using Nedev.FileConverters.Core; // core dependency integrated
+using Nedev.FileConverters.Core;
 
 namespace Nedev.FileConverters.XlsxToXls;
 
@@ -13,14 +13,37 @@ using System.IO;
 /// High-performance XLSX to XLS converter with zero third-party dependencies.
 /// Uses streaming and pooled buffers for optimal memory usage.
 /// </summary>
+/// <remarks>
+/// This converter supports:
+/// <list type="bullet">
+///   <item><description>All Excel cell data types (numbers, text, dates, booleans)</description></item>
+///   <item><description>Formulas with 20+ built-in functions</description></item>
+///   <item><description>Cell formatting and styles</description></item>
+///   <item><description>Charts (8 types with data labels, trendlines, error bars)</description></item>
+///   <item><description>Merge cells, hyperlinks, data validation</description></item>
+///   <item><description>Comments and conditional formatting</description></item>
+/// </list>
+/// </remarks>
 public static class XlsxToXlsConverter
 {
-    // integration adapter for Nedev.FileConverters.Core
+    /// <summary>
+    /// Adapter for Nedev.FileConverters.Core integration.
+    /// Enables this converter to be used within the core framework.
+    /// </summary>
     [FileConverter("xlsx", "xls")]
     public class FileConverterAdapter : IFileConverter
     {
+        /// <summary>
+        /// Converts the input XLSX stream to XLS format.
+        /// </summary>
+        /// <param name="input">The input XLSX stream to convert.</param>
+        /// <returns>A new stream containing the converted XLS data. The caller is responsible for disposing this stream.</returns>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="input"/> is null.</exception>
+        /// <exception cref="InvalidDataException">Thrown when the input is not a valid XLSX file.</exception>
         public Stream Convert(Stream input)
         {
+            if (input == null)
+                throw new ArgumentNullException(nameof(input));
             var output = new MemoryStream();
             XlsxToXlsConverter.Convert(input, output);
             output.Position = 0;
@@ -31,47 +54,120 @@ public static class XlsxToXlsConverter
     /// <summary>
     /// Converts XLSX stream to XLS format and writes to output stream.
     /// </summary>
-    /// <param name="xlsxStream">Input XLSX stream (readable, seekable recommended)</param>
-    /// <param name="xlsStream">Output XLS stream (writable)</param>
-    /// <summary>
-    /// Converts XLSX stream to XLS format and writes to output stream.
-    /// </summary>
-    /// <param name="xlsxStream">Input XLSX stream.</param>
-    /// <param name="xlsStream">Output XLS stream.</param>
-    /// <param name="log">Optional logging callback. Messages are produced when formulas or other
-    /// features fail to compile.</param>
+    /// <param name="xlsxStream">Input XLSX stream. Should be readable and seekable for optimal performance.</param>
+    /// <param name="xlsStream">Output XLS stream. Must be writable.</param>
+    /// <param name="log">Optional logging callback for diagnostic messages. Called when formulas or other features cannot be fully converted.</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="xlsxStream"/> or <paramref name="xlsStream"/> is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="xlsxStream"/> is not readable or <paramref name="xlsStream"/> is not writable.</exception>
+    /// <exception cref="InvalidDataException">Thrown when the input is not a valid XLSX file.</exception>
+    /// <exception cref="IOException">Thrown when an I/O error occurs during conversion.</exception>
+    /// <remarks>
+    /// The conversion process:
+    /// <list type="number">
+    ///   <item><description>Reads XLSX structure (shared strings, sheets, styles)</description></item>
+    ///   <item><description>Estimates required BIFF8 buffer size</description></item>
+    ///   <item><description>Writes BIFF8 records (workbook, sheets, cells, formatting)</description></item>
+    ///   <item><description>Wraps in OLE Compound File format</description></item>
+    /// </list>
+    /// </remarks>
     public static void Convert(Stream xlsxStream, Stream xlsStream, Action<string>? log = null)
     {
+        if (xlsxStream == null)
+            throw new ArgumentNullException(nameof(xlsxStream));
+        if (xlsStream == null)
+            throw new ArgumentNullException(nameof(xlsStream));
+
+        if (!xlsxStream.CanRead)
+            throw new ArgumentException("Input stream must be readable.", nameof(xlsxStream));
+        if (!xlsStream.CanWrite)
+            throw new ArgumentException("Output stream must be writable.", nameof(xlsStream));
+
+        log?.Invoke($"[XlsxToXlsConverter] Starting conversion...");
+
         var (sharedStrings, sheets, styles, definedNames) = XlsxReader.Read(xlsxStream, log);
+        log?.Invoke($"[XlsxToXlsConverter] Read {sharedStrings.Count} shared strings, {sheets.Count} sheets, {definedNames.Count} defined names");
+
         var stylesData = styles ?? CreateDefaultStyles();
+        log?.Invoke($"[XlsxToXlsConverter] Using {stylesData.Fonts.Count} fonts, {stylesData.NumFmts.Count} number formats, {stylesData.CellXfs.Count} cell styles");
+
         var biffSize = EstimateBiffSize(sharedStrings, sheets, stylesData, definedNames);
+        log?.Invoke($"[XlsxToXlsConverter] Estimated BIFF size: {biffSize} bytes");
+
         var buffer = ArrayPool<byte>.Shared.Rent(Math.Max(biffSize, 256 * 1024));
         try
         {
             var written = WriteBiff(buffer.AsSpan(), sharedStrings, sheets, stylesData, definedNames, log);
+            log?.Invoke($"[XlsxToXlsConverter] Written {written} bytes of BIFF data");
+
             var ole = new OleCompoundWriter("Workbook");
             ole.WriteStream(buffer.AsSpan(0, written));
             ole.WriteTo(xlsStream);
+            log?.Invoke($"[XlsxToXlsConverter] OLE compound file written successfully");
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
+            log?.Invoke($"[XlsxToXlsConverter] Conversion completed");
         }
     }
 
     /// <summary>
     /// Converts XLSX file to XLS file.
     /// </summary>
+    /// <param name="xlsxPath">Path to the input XLSX file.</param>
+    /// <param name="xlsPath">Path to the output XLS file. Will be created or overwritten.</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="xlsxPath"/> or <paramref name="xlsPath"/> is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="xlsxPath"/> is empty or contains only whitespace.</exception>
+    /// <exception cref="FileNotFoundException">Thrown when the input file does not exist.</exception>
+    /// <exception cref="UnauthorizedAccessException">Thrown when access to the file is denied.</exception>
+    /// <exception cref="IOException">Thrown when an I/O error occurs during file operations.</exception>
+    /// <exception cref="InvalidDataException">Thrown when the input file is not a valid XLSX file.</exception>
+    /// <remarks>
+    /// This is a convenience method that opens the files and calls <see cref="Convert(Stream, Stream, Action{string}?)"/>.
+    /// The files are properly closed after conversion, even if an error occurs.
+    /// </remarks>
     public static void ConvertFile(string xlsxPath, string xlsPath)
     {
+        if (string.IsNullOrWhiteSpace(xlsxPath))
+            throw new ArgumentException("Path cannot be null or whitespace.", nameof(xlsxPath));
+        if (string.IsNullOrWhiteSpace(xlsPath))
+            throw new ArgumentException("Path cannot be null or whitespace.", nameof(xlsPath));
+
         using var xlsx = File.OpenRead(xlsxPath);
         using var xls = File.Create(xlsPath);
         Convert(xlsx, xls);
     }
 
-    // overload that accepts logging callback
+    /// <summary>
+    /// Converts XLSX file to XLS file with logging.
+    /// </summary>
+    /// <param name="xlsxPath">Path to the input XLSX file.</param>
+    /// <param name="xlsPath">Path to the output XLS file. Will be created or overwritten.</param>
+    /// <param name="log">Logging callback for diagnostic messages.</param>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="xlsxPath"/>, <paramref name="xlsPath"/>, or <paramref name="log"/> is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="xlsxPath"/> is empty or contains only whitespace.</exception>
+    /// <exception cref="FileNotFoundException">Thrown when the input file does not exist.</exception>
+    /// <exception cref="UnauthorizedAccessException">Thrown when access to the file is denied.</exception>
+    /// <exception cref="IOException">Thrown when an I/O error occurs during file operations.</exception>
+    /// <exception cref="InvalidDataException">Thrown when the input file is not a valid XLSX file.</exception>
+    /// <remarks>
+    /// This overload allows you to receive diagnostic messages during conversion.
+    /// Log messages may include:
+    /// <list type="bullet">
+    ///   <item><description>Unsupported formula functions</description></item>
+    ///   <item><description>Chart conversion warnings</description></item>
+    ///   <item><description>Style conversion issues</description></item>
+    /// </list>
+    /// </remarks>
     public static void ConvertFile(string xlsxPath, string xlsPath, Action<string> log)
     {
+        if (string.IsNullOrWhiteSpace(xlsxPath))
+            throw new ArgumentException("Path cannot be null or whitespace.", nameof(xlsxPath));
+        if (string.IsNullOrWhiteSpace(xlsPath))
+            throw new ArgumentException("Path cannot be null or whitespace.", nameof(xlsPath));
+        if (log == null)
+            throw new ArgumentNullException(nameof(log));
+
         using var xlsx = File.OpenRead(xlsxPath);
         using var xls = File.Create(xlsPath);
         Convert(xlsx, xls, log);
